@@ -40,6 +40,19 @@ import androidx.compose.material.TextFieldDefaults
 import android.widget.VideoView
 import android.media.MediaPlayer
 import androidx.compose.ui.viewinterop.AndroidView
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.util.zip.ZipInputStream
+import com.google.accompanist.pager.ExperimentalPagerApi
+import com.google.accompanist.pager.VerticalPager
+import com.google.accompanist.pager.rememberPagerState
+
+// 新增枚举用于区分下载文件类型
+enum class DownloadType {
+    VIDEO,
+    ZIP,
+    OTHER
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -93,11 +106,15 @@ fun DownloadScreen() {
     var ipAddress by remember { mutableStateOf("") }
     var downloadStatus by remember { mutableStateOf("") }
     var playVideo by remember { mutableStateOf(false) }
+    var zipImages by remember { mutableStateOf<List<File>>(emptyList()) }
     val coroutineScope = rememberCoroutineScope()
 
     if (playVideo) {
         // 播放下载的视频文件
         VideoPlayer(file = File(context.filesDir, "downloaded_file"))
+    } else if (zipImages.isNotEmpty()) {
+        // 使用 VerticalPager 显示解压后的图片，达到一屏一张的翻页效果
+        ZipViewer(images = zipImages)
     } else {
         Column(
             modifier = Modifier
@@ -131,11 +148,15 @@ fun DownloadScreen() {
                     downloadStatus = "正在下载..."
                     coroutineScope.launch {
                         try {
-                            val isVideo = downloadFile(context, url)
-                            if (isVideo) {
-                                playVideo = true
-                            } else {
-                                downloadStatus = "下载成功，但文件不是视频"
+                            when (val downloadType = downloadFile(context, url)) {
+                                DownloadType.VIDEO -> playVideo = true
+                                DownloadType.ZIP -> {
+                                    // 解压压缩包中的图片
+                                    zipImages = unzipImages(context)
+                                    if (zipImages.isEmpty())
+                                        downloadStatus = "解压失败或压缩包中无图片"
+                                }
+                                else -> downloadStatus = "下载成功，但文件类型不支持（仅支持视频和压缩包）"
                             }
                         } catch (e: Exception) {
                             downloadStatus = "下载失败: ${e.message}"
@@ -158,7 +179,7 @@ fun DownloadScreen() {
 }
 
 // 实现下载文件的功能，每次下载都会覆盖掉上次保存的文件，返回是否为视频文件
-suspend fun downloadFile(context: Context, urlString: String): Boolean {
+suspend fun downloadFile(context: Context, urlString: String): DownloadType {
     return withContext(Dispatchers.IO) {
         val url = URL(urlString)
         val connection = url.openConnection() as HttpURLConnection
@@ -175,7 +196,11 @@ suspend fun downloadFile(context: Context, urlString: String): Boolean {
 
         // 判断文件类型，根据响应头的 Content-Type 来判定
         val contentType = connection.contentType ?: ""
-        val isVideo = contentType.startsWith("video/")
+        val fileType = when {
+            contentType.startsWith("video/") -> DownloadType.VIDEO
+            contentType.contains("zip", ignoreCase = true) -> DownloadType.ZIP
+            else -> DownloadType.OTHER
+        }
 
         // 保存文件到内部存储
         val inputStream = connection.inputStream
@@ -186,7 +211,7 @@ suspend fun downloadFile(context: Context, urlString: String): Boolean {
         inputStream.close()
         connection.disconnect()
 
-        isVideo
+        fileType
     }
 }
 
@@ -205,4 +230,57 @@ fun VideoPlayer(file: File) {
         },
         modifier = Modifier.fillMaxSize()
     )
+}
+
+// 新增解压函数：解压下载的压缩包并返回所有图片文件
+fun unzipImages(context: Context): List<File> {
+    val zipFile = File(context.filesDir, "downloaded_file")
+    val outputDir = File(context.filesDir, "unzipped_images")
+    if (!outputDir.exists()) {
+        outputDir.mkdirs()
+    }
+    val imageFiles = mutableListOf<File>()
+    ZipInputStream(FileInputStream(zipFile)).use { zis ->
+        var entry = zis.nextEntry
+        while (entry != null) {
+            val fileName = entry.name
+            if (!entry.isDirectory &&
+                (fileName.endsWith(".jpg", ignoreCase = true) ||
+                 fileName.endsWith(".jpeg", ignoreCase = true) ||
+                 fileName.endsWith(".png", ignoreCase = true))
+            ) {
+                val outFile = File(outputDir, fileName)
+                FileOutputStream(outFile).use { fos ->
+                    zis.copyTo(fos)
+                }
+                imageFiles.add(outFile)
+            }
+            entry = zis.nextEntry
+        }
+    }
+    return imageFiles
+}
+
+@OptIn(ExperimentalPagerApi::class)
+@Composable
+fun ZipViewer(images: List<File>) {
+    val pagerState = rememberPagerState()
+    VerticalPager(
+        count = images.size,
+        state = pagerState,
+        modifier = Modifier.fillMaxSize()
+    ) { page ->
+        AndroidView(
+            factory = { context: Context ->
+                android.widget.ImageView(context).apply {
+                    scaleType = android.widget.ImageView.ScaleType.FIT_XY
+                }
+            },
+            update = { view ->
+                val bitmap = android.graphics.BitmapFactory.decodeFile(images[page].absolutePath)
+                view.setImageBitmap(bitmap)
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+    }
 }
