@@ -37,6 +37,9 @@ import java.net.URL
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.material.TextFieldDefaults
+import android.widget.VideoView
+import android.media.MediaPlayer
+import androidx.compose.ui.viewinterop.AndroidView
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -89,64 +92,74 @@ fun DownloadScreen() {
     val context = LocalContext.current
     var ipAddress by remember { mutableStateOf("") }
     var downloadStatus by remember { mutableStateOf("") }
+    var playVideo by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colors.background)
-            .padding(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        OutlinedTextField(
-            value = ipAddress,
-            onValueChange = { ipAddress = it },
-            label = { Text("请输入服务器 IP", color = MaterialTheme.colors.onBackground, fontSize = 12.sp) },
-            placeholder = { Text("例如: 192.168.1.100", color = MaterialTheme.colors.onBackground.copy(alpha = 0.5f), fontSize = 12.sp) },
-            modifier = Modifier.fillMaxWidth(),
-            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
-            colors = TextFieldDefaults.outlinedTextFieldColors(
-                textColor = MaterialTheme.colors.onBackground,
-                cursorColor = MaterialTheme.colors.primary,
-                focusedBorderColor = MaterialTheme.colors.primary,
-                unfocusedBorderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.5f),
-                placeholderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.5f)
-            ),
-            singleLine = true
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Button(
-            onClick = {
-                // 拼接 URL，默认端口设置为 8080，并指定下载路径为 /download（可根据服务端实际情况修改）
-                val url = "http://$ipAddress:8080"
-                downloadStatus = "正在下载..."
-                coroutineScope.launch {
-                    try {
-                        downloadFile(context, url)
-                        downloadStatus = "下载成功！"
-                    } catch (e: Exception) {
-                        downloadStatus = "下载失败: ${e.message}"
-                    }
-                }
-            },
-            modifier = Modifier.height(36.dp)
+    if (playVideo) {
+        // 播放下载的视频文件
+        VideoPlayer(file = File(context.filesDir, "downloaded_file"))
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colors.background)
+                .padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Text("下载文件", fontSize = 12.sp)
+            OutlinedTextField(
+                value = ipAddress,
+                onValueChange = { ipAddress = it },
+                label = { Text("请输入服务器 IP", color = MaterialTheme.colors.onBackground, fontSize = 12.sp) },
+                placeholder = { Text("例如: 192.168.1.100", color = MaterialTheme.colors.onBackground.copy(alpha = 0.5f), fontSize = 12.sp) },
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+                colors = TextFieldDefaults.outlinedTextFieldColors(
+                    textColor = MaterialTheme.colors.onBackground,
+                    cursorColor = MaterialTheme.colors.primary,
+                    focusedBorderColor = MaterialTheme.colors.primary,
+                    unfocusedBorderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.5f),
+                    placeholderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.5f)
+                ),
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    // 拼接 URL，默认端口设置为 8080
+                    val url = "http://$ipAddress:8080"
+                    downloadStatus = "正在下载..."
+                    coroutineScope.launch {
+                        try {
+                            val isVideo = downloadFile(context, url)
+                            if (isVideo) {
+                                playVideo = true
+                            } else {
+                                downloadStatus = "下载成功，但文件不是视频"
+                            }
+                        } catch (e: Exception) {
+                            downloadStatus = "下载失败: ${e.message}"
+                        }
+                    }
+                },
+                modifier = Modifier.height(36.dp)
+            ) {
+                Text("下载文件", fontSize = 12.sp)
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = downloadStatus,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colors.onBackground,
+                fontSize = 12.sp
+            )
         }
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = downloadStatus,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colors.onBackground,
-            fontSize = 12.sp
-        )
     }
 }
 
-// 实现下载文件的功能，每次下载都会覆盖掉上次保存的文件
-suspend fun downloadFile(context: Context, urlString: String) {
-    withContext(Dispatchers.IO) {
+// 实现下载文件的功能，每次下载都会覆盖掉上次保存的文件，返回是否为视频文件
+suspend fun downloadFile(context: Context, urlString: String): Boolean {
+    return withContext(Dispatchers.IO) {
         val url = URL(urlString)
         val connection = url.openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
@@ -160,7 +173,11 @@ suspend fun downloadFile(context: Context, urlString: String) {
             throw Exception("服务器返回错误代码: $responseCode")
         }
 
-        // 通过内部存储保存文件（每次下载都会覆盖旧的文件）
+        // 判断文件类型，根据响应头的 Content-Type 来判定
+        val contentType = connection.contentType ?: ""
+        val isVideo = contentType.startsWith("video/")
+
+        // 保存文件到内部存储
         val inputStream = connection.inputStream
         val file = File(context.filesDir, "downloaded_file")
         file.outputStream().use { fileOut ->
@@ -168,5 +185,24 @@ suspend fun downloadFile(context: Context, urlString: String) {
         }
         inputStream.close()
         connection.disconnect()
+
+        isVideo
     }
+}
+
+@Composable
+fun VideoPlayer(file: File) {
+    AndroidView(
+        factory = { context: Context ->
+            // 使用 VideoView 播放视频
+            val videoView = VideoView(context)
+            videoView.setVideoPath(file.absolutePath)
+            videoView.setOnPreparedListener { mediaPlayer: MediaPlayer ->
+                mediaPlayer.isLooping = true
+                videoView.start()
+            }
+            videoView
+        },
+        modifier = Modifier.fillMaxSize()
+    )
 }
