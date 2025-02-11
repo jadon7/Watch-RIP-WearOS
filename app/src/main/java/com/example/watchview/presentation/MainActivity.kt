@@ -46,11 +46,13 @@ import java.util.zip.ZipInputStream
 import com.google.accompanist.pager.ExperimentalPagerApi
 import com.google.accompanist.pager.VerticalPager
 import com.google.accompanist.pager.rememberPagerState
+import app.rive.runtime.kotlin.core.File as RiveFile
 
 // 新增枚举用于区分下载文件类型
 enum class DownloadType {
     VIDEO,
     ZIP,
+    RIVE,  // 新增 RIVE 类型，用于 .riv 文件
     OTHER
 }
 
@@ -106,12 +108,16 @@ fun DownloadScreen() {
     var ipAddress by remember { mutableStateOf("") }
     var downloadStatus by remember { mutableStateOf("") }
     var playVideo by remember { mutableStateOf(false) }
+    var playRive by remember { mutableStateOf(false) }
     var zipImages by remember { mutableStateOf<List<File>>(emptyList()) }
     val coroutineScope = rememberCoroutineScope()
 
     if (playVideo) {
         // 播放下载的视频文件
         VideoPlayer(file = File(context.filesDir, "downloaded_file"))
+    } else if (playRive) {
+        // 播放下载的 Rive 文件
+        RivePlayer(file = File(context.filesDir, "downloaded_file"))
     } else if (zipImages.isNotEmpty()) {
         // 使用 VerticalPager 显示解压后的图片，达到一屏一张的翻页效果
         ZipViewer(images = zipImages)
@@ -148,15 +154,16 @@ fun DownloadScreen() {
                     downloadStatus = "正在下载..."
                     coroutineScope.launch {
                         try {
-                            when (val downloadType = downloadFile(context, url)) {
+                            val fileType = downloadFile(context, url)
+                            when (fileType) {
                                 DownloadType.VIDEO -> playVideo = true
                                 DownloadType.ZIP -> {
-                                    // 解压压缩包中的图片
                                     zipImages = unzipImages(context)
                                     if (zipImages.isEmpty())
                                         downloadStatus = "解压失败或压缩包中无图片"
                                 }
-                                else -> downloadStatus = "下载成功，但文件类型不支持（仅支持视频和压缩包）"
+                                DownloadType.RIVE -> playRive = true
+                                else -> downloadStatus = "下载成功，但文件类型不支持（仅支持视频、压缩包和 Rive 文件）"
                             }
                         } catch (e: Exception) {
                             downloadStatus = "下载失败: ${e.message}"
@@ -199,6 +206,7 @@ suspend fun downloadFile(context: Context, urlString: String): DownloadType {
         val fileType = when {
             contentType.startsWith("video/") -> DownloadType.VIDEO
             contentType.contains("zip", ignoreCase = true) -> DownloadType.ZIP
+            urlString.lowercase().endsWith(".riv") -> DownloadType.RIVE
             else -> DownloadType.OTHER
         }
 
@@ -229,6 +237,22 @@ fun VideoPlayer(file: File) {
             videoView
         },
         modifier = Modifier.fillMaxSize()
+    )
+}
+
+@Composable
+fun RivePlayer(file: File) {
+    AndroidView(
+        factory = { context ->
+            // 创建 RiveAnimationView 并加载下载的 .riv 文件
+            app.rive.runtime.kotlin.RiveAnimationView(context).apply {
+                // 读取文件字节数组
+                val fileBytes = file.readBytes()
+                // 直接传入 ByteArray 给 RiveFile 的构造函数
+                val riveFile = RiveFile(fileBytes)
+                setRiveFile(riveFile)
+            }
+        }
     )
 }
 

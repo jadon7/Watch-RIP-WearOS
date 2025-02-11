@@ -65,4 +65,5 @@ dependencies {
     debugImplementation(libs.ui.tooling)
     debugImplementation(libs.ui.test.manifest)
     implementation("com.google.accompanist:accompanist-pager:0.28.0")
+    implementation("app.rive:rive-android:9.13.10")
 }
