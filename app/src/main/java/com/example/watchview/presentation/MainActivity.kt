@@ -185,7 +185,7 @@ fun DownloadScreen() {
     }
 }
 
-// 实现下载文件的功能，每次下载都会覆盖掉上次保存的文件，返回是否为视频文件
+// 修改后的 downloadFile 方法：
 suspend fun downloadFile(context: Context, urlString: String): DownloadType {
     return withContext(Dispatchers.IO) {
         val url = URL(urlString)
@@ -201,21 +201,37 @@ suspend fun downloadFile(context: Context, urlString: String): DownloadType {
             throw Exception("服务器返回错误代码: $responseCode")
         }
 
-        // 判断文件类型，根据响应头的 Content-Type 来判定
+        // 初步判断文件类型：根据 Content-Type 和 URL 后缀
         val contentType = connection.contentType ?: ""
-        val fileType = when {
+        var fileType = when {
             contentType.startsWith("video/") -> DownloadType.VIDEO
             contentType.contains("zip", ignoreCase = true) -> DownloadType.ZIP
             urlString.lowercase().endsWith(".riv") -> DownloadType.RIVE
             else -> DownloadType.OTHER
         }
 
-        // 保存文件到内部存储
-        val inputStream = connection.inputStream
         val file = File(context.filesDir, "downloaded_file")
-        file.outputStream().use { fileOut ->
-            inputStream.copyTo(fileOut)
+        val inputStream = connection.inputStream
+
+        if (fileType == DownloadType.OTHER) {
+            // 如果初步判定结果为 OTHER，则尝试读取全部字节进行进一步检测
+            val fileBytes = inputStream.readBytes()
+            // 检查文件头是否为 "RIVE"（假设 Rive 文件以 "RIVE" 开头）
+            if (fileBytes.size >= 4) {
+                val header = String(fileBytes, 0, 4, Charsets.US_ASCII)
+                if (header == "RIVE") {
+                    fileType = DownloadType.RIVE
+                }
+            }
+            // 保存下载的文件
+            file.writeBytes(fileBytes)
+        } else {
+            // 对于视频和 zip 文件，直接复制数据流以避免将大文件读入内存
+            file.outputStream().use { fileOut ->
+                inputStream.copyTo(fileOut)
+            }
         }
+
         inputStream.close()
         connection.disconnect()
 
