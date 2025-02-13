@@ -46,25 +46,25 @@ import java.util.zip.ZipInputStream
 import com.google.accompanist.pager.ExperimentalPagerApi
 import com.google.accompanist.pager.VerticalPager
 import com.google.accompanist.pager.rememberPagerState
-import app.rive.runtime.kotlin.core.File as RiveFile
+import app.rive.runtime.kotlin.core.File as RiveCoreFile
 
-// 新增枚举用于区分下载文件类型
+// 文件类型枚举，用于区分下载的文件类型
 enum class DownloadType {
-    VIDEO,
-    ZIP,
-    RIVE,  // 新增 RIVE 类型，用于 .riv 文件
-    OTHER
+    VIDEO,      // 视频文件
+    ZIP,        // 压缩包文件
+    RIVE,       // Rive 动画文件
+    OTHER       // 其他不支持的文件类型
 }
 
+// 主 Activity
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        installSplashScreen()
+        installSplashScreen()  // 显示启动画面
         super.onCreate(savedInstanceState)
-        setTheme(android.R.style.Theme_DeviceDefault)
+        setTheme(android.R.style.Theme_DeviceDefault)  // 设置 WearOS 默认主题
         setContent {
             WatchViewTheme {
-                // 使用 DownloadScreen 提供输入 IP 并下载文件的功能
-                DownloadScreen()
+                DownloadScreen()  // 显示下载界面
             }
         }
     }
@@ -101,137 +101,139 @@ fun DefaultPreview() {
     WearApp("Preview Android")
 }
 
-// 新增用于手表端下载功能的界面：
+// 下载界面组件
 @Composable
 fun DownloadScreen() {
+    // 状态管理
     val context = LocalContext.current
-    var ipAddress by remember { mutableStateOf("") }
-    var downloadStatus by remember { mutableStateOf("") }
-    var playVideo by remember { mutableStateOf(false) }
-    var playRive by remember { mutableStateOf(false) }
-    var zipImages by remember { mutableStateOf<List<File>>(emptyList()) }
+    var ipAddress by remember { mutableStateOf("") }        // IP 地址输入
+    var downloadStatus by remember { mutableStateOf("") }   // 下载状态显示
+    var playVideo by remember { mutableStateOf(false) }     // 是否播放视频
+    var zipImages by remember { mutableStateOf<List<File>>(emptyList()) }  // 解压的图片列表
+    var playRive by remember { mutableStateOf(false) }      // 是否播放 Rive 动画
     val coroutineScope = rememberCoroutineScope()
 
     if (playVideo) {
         // 播放下载的视频文件
         VideoPlayer(file = File(context.filesDir, "downloaded_file"))
-    } else if (playRive) {
-        // 播放下载的 Rive 文件
-        RivePlayer(file = File(context.filesDir, "downloaded_file"))
     } else if (zipImages.isNotEmpty()) {
         // 使用 VerticalPager 显示解压后的图片，达到一屏一张的翻页效果
         ZipViewer(images = zipImages)
+    } else if (playRive) {
+        // 显示 Rive 动画
+        RivePlayer(file = File(context.filesDir, "downloaded_file"))
     } else {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colors.background)
-                .padding(8.dp),
+                .padding(28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
             OutlinedTextField(
                 value = ipAddress,
                 onValueChange = { ipAddress = it },
-                label = { Text("请输入服务器 IP", color = MaterialTheme.colors.onBackground, fontSize = 12.sp) },
-                placeholder = { Text("例如: 192.168.1.100", color = MaterialTheme.colors.onBackground.copy(alpha = 0.5f), fontSize = 12.sp) },
-                modifier = Modifier.fillMaxWidth(),
-                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+                label = { 
+                    Text(
+                        "服务器地址",
+                        fontSize = 12.sp          // 标签文字大小
+                    )
+                },
+                placeholder = { Text("", color = MaterialTheme.colors.onBackground.copy(alpha = 0.5f), fontSize = 12.sp) },
+                modifier = Modifier
+                    .fillMaxWidth(),                // 宽度填充父容器
+//                    .height(48.dp),               // 输入框高度
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    fontSize = 16.sp              // 输入文字大小
+                ),
                 colors = TextFieldDefaults.outlinedTextFieldColors(
                     textColor = MaterialTheme.colors.onBackground,
                     cursorColor = MaterialTheme.colors.primary,
                     focusedBorderColor = MaterialTheme.colors.primary,
-                    unfocusedBorderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.5f),
-                    placeholderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.5f)
+                    unfocusedBorderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.2f),
+                    placeholderColor = MaterialTheme.colors.onBackground.copy(alpha = 1f)
                 ),
                 singleLine = true
             )
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))  // 输入框与按钮之间的间距
             Button(
                 onClick = {
                     // 拼接 URL，默认端口设置为 8080
                     val url = "http://$ipAddress:8080"
-                    downloadStatus = "正在下载..."
+                    downloadStatus = "下载中..."
                     coroutineScope.launch {
                         try {
-                            val fileType = downloadFile(context, url)
-                            when (fileType) {
+                            when (val downloadType = downloadFile(context, url)) {
                                 DownloadType.VIDEO -> playVideo = true
                                 DownloadType.ZIP -> {
+                                    // 解压压缩包中的图片
                                     zipImages = unzipImages(context)
                                     if (zipImages.isEmpty())
                                         downloadStatus = "解压失败或压缩包中无图片"
                                 }
-                                DownloadType.RIVE -> playRive = true
-                                else -> downloadStatus = "下载成功，但文件类型不支持（仅支持视频、压缩包和 Rive 文件）"
+                                DownloadType.RIVE -> {
+                                    playRive = true
+                                }
+                                else -> downloadStatus = "仅支持视频、图片和 Rive 文件"
                             }
                         } catch (e: Exception) {
                             downloadStatus = "下载失败: ${e.message}"
                         }
                     }
                 },
-                modifier = Modifier.height(36.dp)
+                modifier = Modifier
+                    .width(300.dp)               // 按钮宽度
+                    .height(36.dp),              // 按钮高度
             ) {
-                Text("下载文件", fontSize = 12.sp)
+                Text(
+                    "下载文件", 
+                    fontSize = 10.sp             // 按钮文字大小
+                )
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(8.dp))  // 按钮与状态文本之间的间距
             Text(
                 text = downloadStatus,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colors.onBackground,
-                fontSize = 12.sp
+                fontSize = 8.sp                  // 状态文本大小
             )
         }
     }
 }
 
-// 修改后的 downloadFile 方法：
+// 文件下载功能实现
 suspend fun downloadFile(context: Context, urlString: String): DownloadType {
     return withContext(Dispatchers.IO) {
+        // 设置连接参数
         val url = URL(urlString)
         val connection = url.openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
-        // 可选：设置超时参数
-        connection.connectTimeout = 5000
-        connection.readTimeout = 5000
-        connection.connect()
-
+        connection.connectTimeout = 15000
+        connection.readTimeout = 15000
+        
+        // 检查响应状态
         val responseCode = connection.responseCode
         if (responseCode != HttpURLConnection.HTTP_OK) {
             throw Exception("服务器返回错误代码: $responseCode")
         }
 
-        // 初步判断文件类型：根据 Content-Type 和 URL 后缀
+        // 根据 Content-Type 判断文件类型
         val contentType = connection.contentType ?: ""
-        var fileType = when {
-            contentType.startsWith("video/") -> DownloadType.VIDEO
+        val fileType = when {
+            contentType.startsWith("video/", ignoreCase = true) -> DownloadType.VIDEO
             contentType.contains("zip", ignoreCase = true) -> DownloadType.ZIP
-            urlString.lowercase().endsWith(".riv") -> DownloadType.RIVE
+            contentType.contains("application/rive", ignoreCase = true)
+                || contentType.contains("octet-stream", ignoreCase = true) -> DownloadType.RIVE
             else -> DownloadType.OTHER
         }
 
-        val file = File(context.filesDir, "downloaded_file")
+        // 保存文件到内部存储
         val inputStream = connection.inputStream
-
-        if (fileType == DownloadType.OTHER) {
-            // 如果初步判定结果为 OTHER，则尝试读取全部字节进行进一步检测
-            val fileBytes = inputStream.readBytes()
-            // 检查文件头是否为 "RIVE"（假设 Rive 文件以 "RIVE" 开头）
-            if (fileBytes.size >= 4) {
-                val header = String(fileBytes, 0, 4, Charsets.US_ASCII)
-                if (header == "RIVE") {
-                    fileType = DownloadType.RIVE
-                }
-            }
-            // 保存下载的文件
-            file.writeBytes(fileBytes)
-        } else {
-            // 对于视频和 zip 文件，直接复制数据流以避免将大文件读入内存
-            file.outputStream().use { fileOut ->
-                inputStream.copyTo(fileOut)
-            }
+        val file = File(context.filesDir, "downloaded_file")
+        file.outputStream().use { fileOut ->
+            inputStream.copyTo(fileOut)
         }
-
         inputStream.close()
         connection.disconnect()
 
@@ -239,51 +241,52 @@ suspend fun downloadFile(context: Context, urlString: String): DownloadType {
     }
 }
 
+// 视频播放组件
 @Composable
 fun VideoPlayer(file: File) {
     AndroidView(
         factory = { context: Context ->
-            // 使用 VideoView 播放视频
-            val videoView = VideoView(context)
-            videoView.setVideoPath(file.absolutePath)
-            videoView.setOnPreparedListener { mediaPlayer: MediaPlayer ->
-                mediaPlayer.isLooping = true
-                videoView.start()
+            VideoView(context).apply {
+                setVideoPath(file.absolutePath)
+                setOnPreparedListener { mediaPlayer ->
+                    mediaPlayer.isLooping = true  // 循环播放
+                    start()
+                }
             }
-            videoView
         },
         modifier = Modifier.fillMaxSize()
     )
 }
 
+// Rive 动画播放组件
 @Composable
-fun RivePlayer(file: File) {
+fun RivePlayer(file: java.io.File) {
     AndroidView(
         factory = { context ->
-            // 创建 RiveAnimationView 并加载下载的 .riv 文件
             app.rive.runtime.kotlin.RiveAnimationView(context).apply {
-                // 读取文件字节数组
-                val fileBytes = file.readBytes()
-                // 直接传入 ByteArray 给 RiveFile 的构造函数
-                val riveFile = RiveFile(fileBytes)
+                // 读取本地 Rive 文件并播放
+                val riveFile = RiveCoreFile(file.readBytes())
                 setRiveFile(riveFile)
+                autoplay = true  // 自动播放动画
             }
-        }
+        },
+        modifier = Modifier.fillMaxSize()
     )
 }
 
-// 新增解压函数：解压下载的压缩包并返回所有图片文件
+// ZIP 文件处理：解压并返回图片文件列表
 fun unzipImages(context: Context): List<File> {
     val zipFile = File(context.filesDir, "downloaded_file")
     val outputDir = File(context.filesDir, "unzipped_images")
-    if (!outputDir.exists()) {
-        outputDir.mkdirs()
-    }
+    outputDir.mkdirs()
+    
     val imageFiles = mutableListOf<File>()
     ZipInputStream(FileInputStream(zipFile)).use { zis ->
+        // 遍历压缩包内的文件
         var entry = zis.nextEntry
         while (entry != null) {
             val fileName = entry.name
+            // 仅处理图片文件
             if (!entry.isDirectory &&
                 (fileName.endsWith(".jpg", ignoreCase = true) ||
                  fileName.endsWith(".jpeg", ignoreCase = true) ||
