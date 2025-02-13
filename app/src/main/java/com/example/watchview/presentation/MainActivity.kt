@@ -47,6 +47,9 @@ import com.google.accompanist.pager.ExperimentalPagerApi
 import com.google.accompanist.pager.VerticalPager
 import com.google.accompanist.pager.rememberPagerState
 import app.rive.runtime.kotlin.core.File as RiveCoreFile
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 
 // 文件类型枚举，用于区分下载的文件类型
 enum class DownloadType {
@@ -58,13 +61,35 @@ enum class DownloadType {
 
 // 主 Activity
 class MainActivity : ComponentActivity() {
+    private var isWifiConnected by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()  // 显示启动画面
         super.onCreate(savedInstanceState)
         setTheme(android.R.style.Theme_DeviceDefault)  // 设置 WearOS 默认主题
+
+        // ------------------------- 新增代码：监控 Wi-Fi 状态 -------------------------
+        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        // 监听网络变化的回调
+        val networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val capabilities = connectivityManager.getNetworkCapabilities(network)
+                if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                    isWifiConnected = true
+                }
+            }
+            override fun onLost(network: Network) {
+                isWifiConnected = false
+            }
+        }
+        // 注册回调，实时监听网络状态变化
+        connectivityManager.registerDefaultNetworkCallback(networkCallback)
+        // ---------------------------------------------------------------
+
         setContent {
             WatchViewTheme {
-                DownloadScreen()  // 显示下载界面
+                // 将 Wi-Fi 状态传递到 DownloadScreen
+                DownloadScreen(isWifiConnected = isWifiConnected)
             }
         }
     }
@@ -103,7 +128,7 @@ fun DefaultPreview() {
 
 // 下载界面组件
 @Composable
-fun DownloadScreen() {
+fun DownloadScreen(isWifiConnected: Boolean) {
     // 状态管理
     val context = LocalContext.current
     var ipAddress by remember { mutableStateOf("") }        // IP 地址输入
@@ -112,6 +137,23 @@ fun DownloadScreen() {
     var zipImages by remember { mutableStateOf<List<File>>(emptyList()) }  // 解压的图片列表
     var playRive by remember { mutableStateOf(false) }      // 是否播放 Rive 动画
     val coroutineScope = rememberCoroutineScope()
+
+    // 如果 Wi-Fi 未连接，且不在播放视频 / 不在图片预览 / 不在 Rive 动画预览，则拦截显示全屏提醒
+    if (!isWifiConnected && !playVideo && zipImages.isEmpty() && !playRive) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colors.background),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "请连接 Wi-Fi 后继续",
+                color = MaterialTheme.colors.primary,
+                fontSize = 14.sp,
+            )
+        }
+        return // 提前返回，不渲染下面内容
+    }
 
     if (playVideo) {
         // 播放下载的视频文件
@@ -137,10 +179,11 @@ fun DownloadScreen() {
                 label = { 
                     Text(
                         "服务器地址",
-                        fontSize = 12.sp          // 标签文字大小
+                        fontSize = 12.sp,          // 标签文字大小
+                        color = MaterialTheme.colors.onBackground.copy(alpha = 0.3f)
                     )
                 },
-                placeholder = { Text("", color = MaterialTheme.colors.onBackground.copy(alpha = 0.5f), fontSize = 12.sp) },
+                placeholder = { Text("", color = MaterialTheme.colors.onBackground.copy(alpha = 1f), fontSize = 12.sp) },
                 modifier = Modifier
                     .fillMaxWidth(),                // 宽度填充父容器
 //                    .height(48.dp),               // 输入框高度
