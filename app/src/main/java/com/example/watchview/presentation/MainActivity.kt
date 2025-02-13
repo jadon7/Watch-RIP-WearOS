@@ -225,52 +225,69 @@ fun NetworkScanScreen(
     onServerSelected: (ServerAddress) -> Unit,
     isScanning: Boolean
 ) {
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colors.background)
-            .padding(top = 16.dp, bottom = 0.dp, start = 28.dp, end = 28.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(horizontal = 28.dp),
+        contentAlignment = Alignment.Center  // 使用 Box 和 contentAlignment 来居中内容
     ) {
         if (isScanning) {
-            androidx.wear.compose.material.CircularProgressIndicator(
-                modifier = Modifier
-                    .size(32.dp)
-                    .padding(8.dp),
-                strokeWidth = 4.dp
-            )
-            Text(
-                "正在扫描局域网...",
-                color = MaterialTheme.colors.onBackground,
-                fontSize = 10.sp,
-                modifier = Modifier.padding(8.dp)
-            )
-        } else {
-            Text(
-                "可用服务器",
-                color = MaterialTheme.colors.onBackground,
-                fontSize = 14.sp,
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
-            
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth()
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
             ) {
-                items(servers) { server ->
-                    Button(
-                        onClick = { onServerSelected(server) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 0.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            backgroundColor = androidx.compose.ui.graphics.Color.White
-                        )
-                    ) {
-                        Text(
-                            text = if (server.isManualInput) "手动输入 IP 地址" else server.ip,
-                            color = androidx.compose.ui.graphics.Color.Black,
-                            fontSize = 10.sp
-                        )
+                androidx.wear.compose.material.CircularProgressIndicator(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .padding(8.dp),
+                    strokeWidth = 4.dp
+                )
+                Text(
+                    "正在扫描局域网...",
+                    color = MaterialTheme.colors.onBackground,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "可用服务器",
+                    color = MaterialTheme.colors.onBackground,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 24.dp)
+                )
+                
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(servers) { server ->
+                        Button(
+                            onClick = { onServerSelected(server) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                backgroundColor = if (server.isManualInput) 
+                                    androidx.compose.ui.graphics.Color.DarkGray
+                                else 
+                                    androidx.compose.ui.graphics.Color.White
+                            )
+                        ) {
+                            Text(
+                                text = if (server.isManualInput) "手动输入 IP 地址" else server.ip,
+                                color = if (server.isManualInput)
+                                    androidx.compose.ui.graphics.Color.White
+                                else
+                                    androidx.compose.ui.graphics.Color.Black,
+                                fontSize = 10.sp
+                            )
+                        }
                     }
                 }
             }
@@ -432,7 +449,7 @@ fun DownloadScreen(
                 ),
                 singleLine = true
             )
-            Spacer(modifier = Modifier.height(4.dp))  // 输入框与按钮之间的间距
+            Spacer(modifier = Modifier.height(6.dp))  // 输入框与按钮之间的间距
             Button(
                 onClick = {
                     // 拼接 URL，默认端口设置为 8080
