@@ -199,7 +199,7 @@ fun DownloadScreen(isWifiConnected: Boolean) {
                 ),
                 singleLine = true
             )
-            Spacer(modifier = Modifier.height(12.dp))  // 输入框与按钮之间的间距
+            Spacer(modifier = Modifier.height(4.dp))  // 输入框与按钮之间的间距
             Button(
                 onClick = {
                     // 拼接 URL，默认端口设置为 8080
@@ -226,12 +226,16 @@ fun DownloadScreen(isWifiConnected: Boolean) {
                     }
                 },
                 modifier = Modifier
-                    .width(300.dp)               // 按钮宽度
-                    .height(36.dp),              // 按钮高度
+                    .width(300.dp)
+                    .height(36.dp),
+                colors = androidx.compose.material.ButtonDefaults.buttonColors(
+                    backgroundColor = androidx.compose.ui.graphics.Color.White
+                )
             ) {
                 Text(
-                    "下载文件", 
-                    fontSize = 10.sp             // 按钮文字大小
+                    "下载文件",
+                    fontSize = 12.sp,
+                    color = androidx.compose.ui.graphics.Color.Black
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))  // 按钮与状态文本之间的间距
