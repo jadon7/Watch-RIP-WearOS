@@ -59,6 +59,18 @@ enum class DownloadType {
     OTHER       // 其他不支持的文件类型
 }
 
+// 媒体类型枚举，用于区分解压后的文件类型
+enum class MediaType {
+    IMAGE,
+    VIDEO
+}
+
+// 在文件开头的枚举类型后面添加
+data class MediaFile(
+    val file: File,
+    val type: MediaType
+)
+
 // 主 Activity
 class MainActivity : ComponentActivity() {
     private var isWifiConnected by mutableStateOf(false)
@@ -134,7 +146,7 @@ fun DownloadScreen(isWifiConnected: Boolean) {
     var ipAddress by remember { mutableStateOf("") }        // IP 地址输入
     var downloadStatus by remember { mutableStateOf("") }   // 下载状态显示
     var playVideo by remember { mutableStateOf(false) }     // 是否播放视频
-    var zipImages by remember { mutableStateOf<List<File>>(emptyList()) }  // 解压的图片列表
+    var zipImages by remember { mutableStateOf<List<MediaFile>>(emptyList()) }  // 解压的图片列表
     var playRive by remember { mutableStateOf(false) }      // 是否播放 Rive 动画
     val coroutineScope = rememberCoroutineScope()
 
@@ -160,7 +172,7 @@ fun DownloadScreen(isWifiConnected: Boolean) {
         VideoPlayer(file = File(context.filesDir, "downloaded_file"))
     } else if (zipImages.isNotEmpty()) {
         // 使用 VerticalPager 显示解压后的图片，达到一屏一张的翻页效果
-        ZipViewer(images = zipImages)
+        ZipViewer(media = zipImages)
     } else if (playRive) {
         // 显示 Rive 动画
         RivePlayer(file = File(context.filesDir, "downloaded_file"))
@@ -210,10 +222,13 @@ fun DownloadScreen(isWifiConnected: Boolean) {
                             when (val downloadType = downloadFile(context, url)) {
                                 DownloadType.VIDEO -> playVideo = true
                                 DownloadType.ZIP -> {
-                                    // 解压压缩包中的图片
-                                    zipImages = unzipImages(context)
-                                    if (zipImages.isEmpty())
-                                        downloadStatus = "解压失败或压缩包中无图片"
+                                    // 解压压缩包中的媒体文件
+                                    val mediaFiles = unzipMedia(context)
+                                    if (mediaFiles.isEmpty()) {
+                                        downloadStatus = "解压失败或压缩包中无可用媒体文件"
+                                    } else {
+                                        zipImages = mediaFiles  // 注意：需要修改 zipImages 的类型为 List<MediaFile>
+                                    }
                                 }
                                 DownloadType.RIVE -> {
                                     playRive = true
@@ -322,55 +337,111 @@ fun RivePlayer(file: java.io.File) {
 }
 
 // ZIP 文件处理：解压并返回图片文件列表
-fun unzipImages(context: Context): List<File> {
+fun unzipMedia(context: Context): List<MediaFile> {
     val zipFile = File(context.filesDir, "downloaded_file")
-    val outputDir = File(context.filesDir, "unzipped_images")
+    val outputDir = File(context.filesDir, "unzipped_media")
     outputDir.mkdirs()
     
-    val imageFiles = mutableListOf<File>()
+    val mediaFiles = mutableListOf<MediaFile>()
     ZipInputStream(FileInputStream(zipFile)).use { zis ->
-        // 遍历压缩包内的文件
         var entry = zis.nextEntry
         while (entry != null) {
-            val fileName = entry.name
-            // 仅处理图片文件
-            if (!entry.isDirectory &&
-                (fileName.endsWith(".jpg", ignoreCase = true) ||
-                 fileName.endsWith(".jpeg", ignoreCase = true) ||
-                 fileName.endsWith(".png", ignoreCase = true))
-            ) {
-                val outFile = File(outputDir, fileName)
-                FileOutputStream(outFile).use { fos ->
-                    zis.copyTo(fos)
+            val fileName = entry.name.lowercase()
+            if (!entry.isDirectory) {
+                val isImage = fileName.endsWith(".jpg") || 
+                             fileName.endsWith(".jpeg") || 
+                             fileName.endsWith(".png")
+                val isVideo = fileName.endsWith(".mp4") || 
+                             fileName.endsWith(".3gp") || 
+                             fileName.endsWith(".mkv")
+                
+                if (isImage || isVideo) {
+                    val outFile = File(outputDir, fileName)
+                    FileOutputStream(outFile).use { fos ->
+                        zis.copyTo(fos)
+                    }
+                    mediaFiles.add(
+                        MediaFile(
+                            file = outFile,
+                            type = if (isImage) MediaType.IMAGE else MediaType.VIDEO
+                        )
+                    )
                 }
-                imageFiles.add(outFile)
             }
             entry = zis.nextEntry
         }
     }
-    return imageFiles
+    return mediaFiles
 }
 
 @OptIn(ExperimentalPagerApi::class)
 @Composable
-fun ZipViewer(images: List<File>) {
+fun ZipViewer(media: List<MediaFile>) {
     val pagerState = rememberPagerState()
+    
+    // 记录当前正在播放的视频页面
+    var currentPlayingPage by remember { mutableStateOf<Int?>(null) }
+    
+    // 当页面改变时更新播放状态
+    LaunchedEffect(pagerState.currentPage) {
+        currentPlayingPage = if (media[pagerState.currentPage].type == MediaType.VIDEO) {
+            pagerState.currentPage
+        } else {
+            null
+        }
+    }
+
     VerticalPager(
-        count = images.size,
+        count = media.size,
         state = pagerState,
         modifier = Modifier.fillMaxSize()
     ) { page ->
-        AndroidView(
-            factory = { context: Context ->
-                android.widget.ImageView(context).apply {
-                    scaleType = android.widget.ImageView.ScaleType.FIT_XY
-                }
-            },
-            update = { view ->
-                val bitmap = android.graphics.BitmapFactory.decodeFile(images[page].absolutePath)
-                view.setImageBitmap(bitmap)
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+        when (media[page].type) {
+            MediaType.IMAGE -> {
+                // 显示图片
+                AndroidView(
+                    factory = { context ->
+                        android.widget.ImageView(context).apply {
+                            scaleType = android.widget.ImageView.ScaleType.FIT_XY
+                        }
+                    },
+                    update = { view ->
+                        val bitmap = android.graphics.BitmapFactory.decodeFile(media[page].file.absolutePath)
+                        view.setImageBitmap(bitmap)
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            MediaType.VIDEO -> {
+                // 显示视频
+                AndroidView(
+                    factory = { context ->
+                        VideoView(context).apply {
+                            setVideoPath(media[page].file.absolutePath)
+                            setOnPreparedListener { mediaPlayer ->
+                                mediaPlayer.isLooping = true
+                                // 只有当前页面是视频时才自动播放
+                                if (page == currentPlayingPage) {
+                                    start()
+                                }
+                            }
+                        }
+                    },
+                    update = { view ->
+                        // 根据是否是当前页面来控制播放状态
+                        if (page == currentPlayingPage) {
+                            if (!view.isPlaying) {
+                                view.start()
+                            }
+                        } else {
+                            if (view.isPlaying) {
+                                view.pause()
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
     }
 }
