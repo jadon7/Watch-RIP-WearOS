@@ -233,19 +233,20 @@ suspend fun scanLocalNetwork(context: Context): List<ServerAddress> {
     }
 }
 
-// 添加扫描页面组件
+// 修改 NetworkScanScreen 组件
 @Composable
 fun NetworkScanScreen(
     servers: List<ServerAddress>,
     onServerSelected: (ServerAddress) -> Unit,
-    isScanning: Boolean
+    isScanning: Boolean,
+    onCancelScan: () -> Unit = {}  // 添加取消回调
 ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colors.background)
             .padding(horizontal = 28.dp),
-        contentAlignment = Alignment.Center  // 使用 Box 和 contentAlignment 来居中内容
+        contentAlignment = Alignment.Center
     ) {
         if (isScanning) {
             Column(
@@ -264,6 +265,23 @@ fun NetworkScanScreen(
                     fontSize = 10.sp,
                     modifier = Modifier.padding(top = 8.dp)
                 )
+                
+                // 添加取消按钮
+                Button(
+                    onClick = onCancelScan,
+                    modifier = Modifier
+                        .padding(top = 16.dp)
+                        .height(32.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = androidx.compose.ui.graphics.Color.DarkGray.copy(alpha = 0.6f)
+                    )
+                ) {
+                    Text(
+                        "取消",
+                        color = androidx.compose.ui.graphics.Color.White,
+                        fontSize = 10.sp
+                    )
+                }
             }
         } else {
             Column(
@@ -279,29 +297,67 @@ fun NetworkScanScreen(
                 
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    items(servers) { server ->
+                    items(servers.filterNot { it.isManualInput }) { server ->
                         Button(
                             onClick = { onServerSelected(server) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(36.dp),
                             colors = ButtonDefaults.buttonColors(
-                                backgroundColor = if (server.isManualInput) 
-                                    androidx.compose.ui.graphics.Color.DarkGray
-                                else 
-                                    androidx.compose.ui.graphics.Color.White
+                                backgroundColor = androidx.compose.ui.graphics.Color.White
                             )
                         ) {
                             Text(
-                                text = if (server.isManualInput) "手动输入 IP 地址" else server.ip,
-                                color = if (server.isManualInput)
-                                    androidx.compose.ui.graphics.Color.White
-                                else
-                                    androidx.compose.ui.graphics.Color.Black,
+                                text = server.ip,
+                                color = androidx.compose.ui.graphics.Color.Black,
                                 fontSize = 10.sp
                             )
+                        }
+                    }
+                    
+                    // 手动输入和重新扫描按钮
+                    item {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(top = 6.dp)
+                        ) {
+                            // 手动输入按钮
+                            Button(
+                                onClick = { onServerSelected(ServerAddress("手动输入", true)) },
+                                modifier = Modifier
+                                    .width(120.dp)  // 设置固定宽度
+                                    .height(36.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    backgroundColor = androidx.compose.ui.graphics.Color.DarkGray
+                                )
+                            ) {
+                                Text(
+                                    "手动输入",
+                                    color = androidx.compose.ui.graphics.Color.White,
+                                    fontSize = 10.sp
+                                )
+                            }
+                            
+                            // 重新扫描按钮
+                            Button(
+                                onClick = onCancelScan,
+                                modifier = Modifier
+                                    .width(120.dp)  // 设置相同的固定宽度
+                                    .height(36.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    backgroundColor = androidx.compose.ui.graphics.Color.DarkGray
+                                )
+                            ) {
+                                Text(
+                                    "重新扫描",
+                                    color = androidx.compose.ui.graphics.Color.White,
+                                    fontSize = 10.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -334,6 +390,9 @@ fun DownloadScreen(
     
     // 添加一个状态来控制是否显示预览
     var showPreview by remember { mutableStateOf(false) }
+
+    // 添加一个协程作用域来控制扫描任务
+    val scanJob = remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     // 监听 ipAddress 的变化
     LaunchedEffect(ipAddress) {
@@ -384,12 +443,14 @@ fun DownloadScreen(
         }
     }
 
-    // 初始扫描
+    // 修改初始扫描逻辑
     LaunchedEffect(Unit) {
         if (isWifiConnected) {
             isScanning = true
-            servers = scanLocalNetwork(context)
-            isScanning = false
+            scanJob.value = coroutineScope.launch {
+                servers = scanLocalNetwork(context)
+                isScanning = false
+            }
         }
     }
 
@@ -434,6 +495,21 @@ fun DownloadScreen(
                     showScanScreen = false
                     // 自动开始下载
                     handleDownload("http://$ipAddress:8080")
+                }
+            },
+            onCancelScan = {
+                // 取消当前扫描任务
+                scanJob.value?.cancel()
+                if (isScanning) {
+                    // 如果是在扫描过程中取消，进入输入界面
+                    showScanScreen = false
+                } else {
+                    // 如果是点击重新扫描，重新开始扫描
+                    isScanning = true
+                    scanJob.value = coroutineScope.launch {
+                        servers = scanLocalNetwork(context)
+                        isScanning = false
+                    }
                 }
             }
         )
