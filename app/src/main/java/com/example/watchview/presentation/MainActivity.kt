@@ -425,29 +425,21 @@ fun DownloadScreen(
                             downloadStatus = "解压失败或压缩包中无可用媒体文件"
                         } else {
                             downloadStatus = ""
-                            // 启动媒体预览 Activity
+                            // 启动媒体预览 Activity，移除过渡动画
                             val intent = android.content.Intent(context, MediaPreviewActivity::class.java).apply {
                                 putStringArrayListExtra("media_files", ArrayList(mediaFiles.map { it.file.absolutePath }))
                                 putStringArrayListExtra("media_types", ArrayList(mediaFiles.map { it.type.name }))
                             }
                             context.startActivity(intent)
-                            (context as? Activity)?.overridePendingTransition(
-                                android.R.anim.fade_in,
-                                android.R.anim.fade_out
-                            )
                         }
                     }
                     DownloadType.RIVE -> {
                         downloadStatus = ""
-                        // 启动 Rive 预览 Activity
+                        // 启动 Rive 预览 Activity，移除过渡动画
                         val intent = android.content.Intent(context, RivePreviewActivity::class.java).apply {
                             putExtra("file_path", File(context.filesDir, "downloaded_file").absolutePath)
                         }
                         context.startActivity(intent)
-                        (context as? Activity)?.overridePendingTransition(
-                            android.R.anim.fade_in,
-                            android.R.anim.fade_out
-                        )
                     }
                     else -> downloadStatus = "不支持的文件类型"
                 }

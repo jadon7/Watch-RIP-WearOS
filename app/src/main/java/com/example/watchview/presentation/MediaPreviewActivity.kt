@@ -41,7 +41,5 @@ class MediaPreviewActivity : ComponentActivity() {
 
     override fun onBackPressed() {
         super.onBackPressed()
-        // 添加过渡动画
-        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
     }
 } 
