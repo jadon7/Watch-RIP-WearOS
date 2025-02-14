@@ -274,7 +274,8 @@ fun NetworkScanScreen(
                         .height(32.dp),
                     colors = ButtonDefaults.buttonColors(
                         backgroundColor = androidx.compose.ui.graphics.Color.DarkGray.copy(alpha = 0.6f)
-                    )
+                    ),
+                    shape = androidx.compose.foundation.shape.CircleShape
                 ) {
                     Text(
                         "取消",
@@ -305,35 +306,38 @@ fun NetworkScanScreen(
                             onClick = { onServerSelected(server) },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(36.dp),
+                                .height(60.dp),
                             colors = ButtonDefaults.buttonColors(
-                                backgroundColor = androidx.compose.ui.graphics.Color.White
-                            )
+                                backgroundColor = androidx.compose.ui.graphics.Color(0xFF2196F3).copy(alpha = 0.3f)
+                            ),
+                            shape = androidx.compose.foundation.shape.CircleShape
                         ) {
                             Text(
                                 text = server.ip,
-                                color = androidx.compose.ui.graphics.Color.Black,
-                                fontSize = 10.sp
+                                color = androidx.compose.ui.graphics.Color(0xFF2196F3),
+                                fontSize = 16.sp
                             )
                         }
                     }
                     
-                    // 手动输入和重新扫描按钮
+                    // 修改手动输入和重新扫描按钮的布局
                     item {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.padding(top = 6.dp)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .padding(top = 6.dp)
+                                .fillMaxWidth()  // 添加 fillMaxWidth 让 Row 占满宽度
                         ) {
                             // 手动输入按钮
                             Button(
                                 onClick = { onServerSelected(ServerAddress("手动输入", true)) },
                                 modifier = Modifier
-                                    .width(120.dp)  // 设置固定宽度
+                                    .weight(1f)  // 使用 weight 替代固定宽度
                                     .height(36.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     backgroundColor = androidx.compose.ui.graphics.Color.DarkGray
-                                )
+                                ),
+                                shape = androidx.compose.foundation.shape.CircleShape
                             ) {
                                 Text(
                                     "手动输入",
@@ -346,11 +350,12 @@ fun NetworkScanScreen(
                             Button(
                                 onClick = onCancelScan,
                                 modifier = Modifier
-                                    .width(120.dp)  // 设置相同的固定宽度
+                                    .weight(1f)  // 使用 weight 替代固定宽度
                                     .height(36.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     backgroundColor = androidx.compose.ui.graphics.Color.DarkGray
-                                )
+                                ),
+                                shape = androidx.compose.foundation.shape.CircleShape
                             ) {
                                 Text(
                                     "重新扫描",
@@ -553,22 +558,22 @@ fun DownloadScreen(
             Spacer(modifier = Modifier.height(6.dp))  // 输入框与按钮之间的间距
             Button(
                 onClick = {
-                    // 拼接 URL，默认端口设置为 8080
                     val url = "http://$ipAddress:8080"
                     downloadStatus = "下载中..."
                     handleDownload(url)
                 },
                 modifier = Modifier
                     .width(300.dp)
-                    .height(36.dp),
-                colors = androidx.compose.material.ButtonDefaults.buttonColors(
-                    backgroundColor = androidx.compose.ui.graphics.Color.White
-                )
+                    .height( 48.dp),
+                colors = ButtonDefaults.buttonColors(
+                    backgroundColor = androidx.compose.ui.graphics.Color(0xFF2196F3)
+                ),
+                shape = androidx.compose.foundation.shape.CircleShape
             ) {
                 Text(
                     "下载文件",
                     fontSize = 12.sp,
-                    color = androidx.compose.ui.graphics.Color.Black
+                    color = androidx.compose.ui.graphics.Color.White
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))  // 按钮与状态文本之间的间距
