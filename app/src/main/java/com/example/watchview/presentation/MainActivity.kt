@@ -64,6 +64,7 @@ import java.util.zip.ZipFile
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import com.example.watchview.utils.PreferencesManager
+import android.app.Activity
 
 // 文件类型枚举，用于区分下载的文件类型
 enum class DownloadType {
@@ -90,6 +91,12 @@ data class ServerAddress(
     val ip: String,
     val isManualInput: Boolean = false
 )
+
+// 添加 PreviewType 密封类定义
+sealed class PreviewType {
+    data class MediaPreview(val mediaFiles: List<MediaFile>) : PreviewType()
+    data class RivePreview(val riveFile: File) : PreviewType()
+}
 
 // 主 Activity
 class MainActivity : ComponentActivity() {
@@ -124,12 +131,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             WatchViewTheme {
-                // 传入上次保存的 IP 地址
                 DownloadScreen(
                     isWifiConnected = isWifiConnected,
                     initialIpAddress = preferencesManager.lastIpAddress,
                     onIpAddressChange = { newIp ->
-                        // 当 IP 地址改变时保存
                         preferencesManager.lastIpAddress = newIp
                     }
                 )
@@ -371,7 +376,7 @@ fun NetworkScanScreen(
     }
 }
 
-// 修改 DownloadScreen 的参数和实现
+// 修改 DownloadScreen 函数
 @Composable
 fun DownloadScreen(
     isWifiConnected: Boolean,
@@ -383,18 +388,12 @@ fun DownloadScreen(
     var servers by remember { mutableStateOf<List<ServerAddress>>(emptyList()) }
     var ipAddress by remember { mutableStateOf(initialIpAddress) }
     var downloadStatus by remember { mutableStateOf("") }   // 下载状态显示
-    var playVideo by remember { mutableStateOf(false) }     // 是否播放视频
-    var zipImages by remember { mutableStateOf<List<MediaFile>>(emptyList()) }  // 解压的图片列表
-    var playRive by remember { mutableStateOf(false) }      // 是否播放 Rive 动画
     val coroutineScope = rememberCoroutineScope()
 
     val context = LocalContext.current
 
     // 添加下载进度状态
     var downloadProgress by remember { mutableStateOf(0f) }
-    
-    // 添加一个状态来控制是否显示预览
-    var showPreview by remember { mutableStateOf(false) }
 
     // 添加一个协程作用域来控制扫描任务
     val scanJob = remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
@@ -425,24 +424,35 @@ fun DownloadScreen(
                         if (mediaFiles.isEmpty()) {
                             downloadStatus = "解压失败或压缩包中无可用媒体文件"
                         } else {
-                            println("Setting ${mediaFiles.size} media files to zipImages") // 调试日志
-                            zipImages = mediaFiles
                             downloadStatus = ""
-                            showPreview = true  // 设置显示预览
-                            playRive = false    // 确保 Rive 播放状态为 false
+                            // 启动媒体预览 Activity
+                            val intent = android.content.Intent(context, MediaPreviewActivity::class.java).apply {
+                                putStringArrayListExtra("media_files", ArrayList(mediaFiles.map { it.file.absolutePath }))
+                                putStringArrayListExtra("media_types", ArrayList(mediaFiles.map { it.type.name }))
+                            }
+                            context.startActivity(intent)
+                            (context as? Activity)?.overridePendingTransition(
+                                android.R.anim.fade_in,
+                                android.R.anim.fade_out
+                            )
                         }
                     }
                     DownloadType.RIVE -> {
                         downloadStatus = ""
-                        playRive = true      // 设置播放 Rive
-                        showPreview = false  // 关闭预览状态
-                        zipImages = emptyList() // 清空媒体文件列表
+                        // 启动 Rive 预览 Activity
+                        val intent = android.content.Intent(context, RivePreviewActivity::class.java).apply {
+                            putExtra("file_path", File(context.filesDir, "downloaded_file").absolutePath)
+                        }
+                        context.startActivity(intent)
+                        (context as? Activity)?.overridePendingTransition(
+                            android.R.anim.fade_in,
+                            android.R.anim.fade_out
+                        )
                     }
                     else -> downloadStatus = "不支持的文件类型"
                 }
             } catch (e: Exception) {
                 downloadStatus = "下载失败: ${e.message}"
-                println("Download error: ${e.message}") // 调试日志
                 e.printStackTrace()
             }
         }
@@ -459,15 +469,7 @@ fun DownloadScreen(
         }
     }
 
-    // 添加状态变化监控
-    LaunchedEffect(zipImages) {
-        println("zipImages changed: size = ${zipImages.size}")
-        zipImages.forEach { mediaFile ->
-            println("Media file: ${mediaFile.file.absolutePath}, type: ${mediaFile.type}")
-        }
-    }
-
-    if (!isWifiConnected && !playVideo && zipImages.isEmpty() && !playRive) {
+    if (!isWifiConnected) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -481,14 +483,7 @@ fun DownloadScreen(
             )
         }
         return // 提前返回，不渲染下面内容
-    }
-
-    if (playRive) {
-        // 显示 Rive 动画
-        RivePlayer(file = File(context.filesDir, "downloaded_file"))
-    } else if (showPreview && zipImages.isNotEmpty()) {
-        ZipViewer(media = zipImages)
-    } else if (showScanScreen && isWifiConnected) {
+    } else if (showScanScreen) {
         NetworkScanScreen(
             servers = servers,
             isScanning = isScanning,
@@ -542,7 +537,7 @@ fun DownloadScreen(
                 placeholder = { Text("", color = MaterialTheme.colors.onBackground.copy(alpha = 1f), fontSize = 12.sp) },
                 modifier = Modifier
                     .fillMaxWidth(),                // 宽度填充父容器
-//                    .height(48.dp),               // 输入框高度
+    //                    .height(48.dp),               // 输入框高度
                 textStyle = androidx.compose.ui.text.TextStyle(
                     fontSize = 16.sp              // 输入文字大小
                 ),
