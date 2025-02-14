@@ -63,6 +63,7 @@ import androidx.wear.compose.material.CircularProgressIndicator
 import java.util.zip.ZipFile
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import com.example.watchview.utils.PreferencesManager
 
 // 文件类型枚举，用于区分下载的文件类型
 enum class DownloadType {
@@ -93,11 +94,15 @@ data class ServerAddress(
 // 主 Activity
 class MainActivity : ComponentActivity() {
     private var isWifiConnected by mutableStateOf(false)
+    private lateinit var preferencesManager: PreferencesManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()  // 显示启动画面
         super.onCreate(savedInstanceState)
         setTheme(android.R.style.Theme_DeviceDefault)  // 设置 WearOS 默认主题
+
+        // 初始化 PreferencesManager
+        preferencesManager = PreferencesManager(this)
 
         // ------------------------- 新增代码：监控 Wi-Fi 状态 -------------------------
         val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -119,8 +124,15 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             WatchViewTheme {
-                // 将 Wi-Fi 状态传递到 DownloadScreen
-                DownloadScreen(isWifiConnected = isWifiConnected)
+                // 传入上次保存的 IP 地址
+                DownloadScreen(
+                    isWifiConnected = isWifiConnected,
+                    initialIpAddress = preferencesManager.lastIpAddress,
+                    onIpAddressChange = { newIp ->
+                        // 当 IP 地址改变时保存
+                        preferencesManager.lastIpAddress = newIp
+                    }
+                )
             }
         }
     }
@@ -302,7 +314,8 @@ fun NetworkScanScreen(
 @Composable
 fun DownloadScreen(
     isWifiConnected: Boolean,
-    initialIpAddress: String = ""
+    initialIpAddress: String = "",
+    onIpAddressChange: (String) -> Unit = {}
 ) {
     var showScanScreen by remember { mutableStateOf(true) }
     var isScanning by remember { mutableStateOf(true) }
@@ -321,6 +334,13 @@ fun DownloadScreen(
     
     // 添加一个状态来控制是否显示预览
     var showPreview by remember { mutableStateOf(false) }
+
+    // 监听 ipAddress 的变化
+    LaunchedEffect(ipAddress) {
+        if (ipAddress.isNotEmpty()) {
+            onIpAddressChange(ipAddress)
+        }
+    }
 
     // 修改下载处理逻辑
     val handleDownload = { url: String ->
@@ -428,7 +448,9 @@ fun DownloadScreen(
         ) {
             OutlinedTextField(
                 value = ipAddress,
-                onValueChange = { ipAddress = it },
+                onValueChange = { 
+                    ipAddress = it
+                },
                 label = { 
                     Text(
                         "服务器地址",
