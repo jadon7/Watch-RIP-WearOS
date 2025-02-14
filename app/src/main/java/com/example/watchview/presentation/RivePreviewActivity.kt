@@ -13,14 +13,48 @@ import com.example.watchview.presentation.theme.WatchViewTheme
 import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.ui.viewinterop.AndroidView
+import app.rive.runtime.kotlin.RiveAnimationView
+import app.rive.runtime.kotlin.core.File as RiveCoreFile
+import app.rive.runtime.kotlin.core.SMINumber
+import java.util.*
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class RivePreviewActivity : ComponentActivity() {
     // 保留类级别的变量用于 onTouchEvent
     private var touchStartTime = 0L
     private var isTwoFingerPressed = false
     
+    // 添加电池电量状态
+    private val _batteryLevel = MutableStateFlow(0f)
+    val batteryLevel: StateFlow<Float> = _batteryLevel.asStateFlow()
+
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_BATTERY_CHANGED) {
+                val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                val batteryPct = level * 100f / scale
+                _batteryLevel.value = batteryPct
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 注册电池状态广播接收器
+        registerReceiver(
+            batteryReceiver,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        )
         
         // 启用向上导航
         actionBar?.setDisplayHomeAsUpEnabled(true)
@@ -61,10 +95,20 @@ class RivePreviewActivity : ComponentActivity() {
                             }
                         }
                 ) {
-                    RivePlayer(file = File(filePath))
+                    // 将电池电量传递给 RivePlayerUI
+                    RivePlayerUI(
+                        file = File(filePath),
+                        batteryLevel = batteryLevel.collectAsState().value
+                    )
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // 取消注册广播接收器
+        unregisterReceiver(batteryReceiver)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -99,4 +143,146 @@ class RivePreviewActivity : ComponentActivity() {
     override fun onBackPressed() {
         super.onBackPressed()
     }
+}
+
+@Composable
+fun RivePlayerUI(
+    file: java.io.File,
+    batteryLevel: Float
+) {
+    // 现有的时间状态
+    var currentHour by remember { mutableStateOf(Calendar.getInstance().get(Calendar.HOUR_OF_DAY).toFloat()) }
+    var currentMinute by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MINUTE).toFloat()) }
+    var currentSecond by remember { mutableStateOf(0f) }
+    var currentBattery by remember { mutableStateOf(batteryLevel) }
+    
+    // 添加日期相关状态
+    var currentMonth by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH) + 1f) } // 月份从0开始，需要+1
+    var currentDay by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH).toFloat()) }
+    var currentWeek by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1f) } // 转换为0-6
+
+    // 每小时更新日期相关状态
+    LaunchedEffect(Unit) {
+        while (true) {
+            val calendar = Calendar.getInstance()
+            currentMonth = (calendar.get(Calendar.MONTH) + 1).toFloat()
+            currentDay = calendar.get(Calendar.DAY_OF_MONTH).toFloat()
+            currentWeek = (calendar.get(Calendar.DAY_OF_WEEK) - 1).toFloat() // 周日为1，转换为0
+            delay(60 * 60 * 1000L) // 1小时
+        }
+    }
+
+    // 每5分钟更新小时，保留1位小数
+    LaunchedEffect(Unit) {
+        while (true) {
+            val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+            val minute = Calendar.getInstance().get(Calendar.MINUTE)
+            currentHour = (hour + minute / 60f).round(1)
+            delay(5 * 60 * 1000L) // 5分钟
+        }
+    }
+    
+    // 每5秒更新分钟，保留1位小数
+    LaunchedEffect(Unit) {
+        while (true) {
+            val minute = Calendar.getInstance().get(Calendar.MINUTE)
+            val second = Calendar.getInstance().get(Calendar.SECOND)
+            currentMinute = (minute + second / 60f).round(1)
+            delay(5000L) // 5秒
+        }
+    }
+    
+    // 每0.1秒更新秒钟，保留2位小数
+    LaunchedEffect(Unit) {
+        while (true) {
+            val second = Calendar.getInstance().get(Calendar.SECOND)
+            val millis = Calendar.getInstance().get(Calendar.MILLISECOND)
+            currentSecond = (second + millis / 1000f).round(2)
+            delay(100L) // 0.1秒，每秒10次
+        }
+    }
+
+    // 添加电池更新的 LaunchedEffect
+    LaunchedEffect(batteryLevel) {
+        while (true) {
+            currentBattery = batteryLevel
+            delay(5 * 60 * 1000L) // 5分钟
+        }
+    }
+
+    AndroidView(
+        factory = { context ->
+            RiveAnimationView(context).apply {
+                val riveFile = RiveCoreFile(file.readBytes())
+                setRiveFile(riveFile)
+                autoplay = true
+
+                val artboard = riveFile.firstArtboard
+                val smNames = artboard?.stateMachineNames ?: emptyList()
+                
+                if (smNames.isNotEmpty()) {
+                    val firstMachineName = smNames[0]
+                    val firstMachine = artboard?.stateMachine(firstMachineName)
+                    
+                    // 安全地设置输入值
+                    fun safeSetNumberState(inputName: String, value: Float) {
+                        try {
+                            if (firstMachine?.inputs?.any { it.name == inputName } == true) {
+                                this@apply.setNumberState(firstMachineName, inputName, value)
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+
+                    // 初始化所有可能的输入值
+                    safeSetNumberState("timeHour", currentHour)
+                    safeSetNumberState("timeMinute", currentMinute)
+                    safeSetNumberState("timeSecond", currentSecond)
+                    safeSetNumberState("systemStatusBattery", currentBattery)
+                    // 添加日期相关输入
+                    safeSetNumberState("dateMonth", currentMonth)
+                    safeSetNumberState("dateDay", currentDay)
+                    safeSetNumberState("dateWeek", currentWeek)
+                }
+            }
+        },
+        update = { riveView ->
+            val artboard = riveView.file?.firstArtboard
+            val smNames = artboard?.stateMachineNames ?: emptyList()
+            
+            if (smNames.isNotEmpty()) {
+                val firstMachineName = smNames[0]
+                
+                fun safeSetNumberState(inputName: String, value: Float) {
+                    try {
+                        val firstMachine = artboard?.stateMachine(firstMachineName)
+                        if (firstMachine?.inputs?.any { it.name == inputName } == true) {
+                            riveView.setNumberState(firstMachineName, inputName, value)
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                // 更新所有可能的输入值
+                safeSetNumberState("timeHour", currentHour)
+                safeSetNumberState("timeMinute", currentMinute)
+                safeSetNumberState("timeSecond", currentSecond)
+                safeSetNumberState("systemStatusBattery", currentBattery)
+                // 添加日期相关输入的更新
+                safeSetNumberState("dateMonth", currentMonth)
+                safeSetNumberState("dateDay", currentDay)
+                safeSetNumberState("dateWeek", currentWeek)
+            }
+        },
+        modifier = Modifier.fillMaxSize()
+    )
+}
+
+// 扩展函数：对 Float 进行四舍五入并保留指定位数的小数
+private fun Float.round(decimals: Int): Float {
+    var multiplier = 1.0f
+    repeat(decimals) { multiplier *= 10 }
+    return kotlin.math.round(this * multiplier) / multiplier
 } 
