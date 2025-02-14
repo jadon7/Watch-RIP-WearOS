@@ -51,7 +51,7 @@
         <activity
             android:name=".presentation.RivePreviewActivity"
             android:exported="false"
-            android:theme="@android:style/Theme.DeviceDefault"
+            android:theme="@style/NoSwipeTheme"
             android:enableOnBackInvokedCallback="true">
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"
