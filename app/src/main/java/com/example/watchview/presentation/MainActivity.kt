@@ -510,23 +510,23 @@ suspend fun downloadFile(
             connection = url.openConnection() as HttpURLConnection
             connection.apply {
                 requestMethod = "GET"
-                connectTimeout = 5000
-                readTimeout = 30000
-                instanceFollowRedirects = true
+                connectTimeout = 15000  // 增加连接超时时间到15秒
+                readTimeout = 45000     // 增加读取超时时间到45秒
                 
-                // 添加请求头
+                // 优化连接配置
                 setRequestProperty("Accept", "*/*")
-                setRequestProperty("Connection", "close")
+                setRequestProperty("Connection", "keep-alive") // 使用持久连接
+                setRequestProperty("Accept-Encoding", "gzip, deflate") // 支持压缩
+                setRequestProperty("User-Agent", "WatchView/1.0")
                 
-                // 禁用缓存
-                useCaches = false
-                defaultUseCaches = false
+                // 启用缓存
+                useCaches = true
+                defaultUseCaches = true
                 
-                // 设置不要追踪重定向
-                instanceFollowRedirects = false
+                // 允许自动重定向
+                instanceFollowRedirects = true
             }
             
-            // 连接并获取响应码
             val responseCode = connection.responseCode
             println("Response code: $responseCode")
             
@@ -534,33 +534,34 @@ suspend fun downloadFile(
                 throw Exception("服务器返回错误代码: $responseCode")
             }
             
-            // 获取内容类型
             val contentType = connection.contentType ?: "application/zip"
-            println("Content type: $contentType")
-            
-            // 获取文件大小
             val fileSize = connection.contentLength.toLong()
-            println("File size: $fileSize bytes")
+            println("Content type: $contentType, File size: $fileSize bytes")
             
-            // 保存文件
+            // 创建输出文件
             val file = File(context.filesDir, "downloaded_file")
+            
+            // 使用更大的缓冲区(1MB)进行读写
+            val buffer = ByteArray(1024 * 1024)
+            var lastProgressUpdate = 0L
             var totalBytesRead = 0L
             
-            connection.inputStream.use { input ->
-                file.outputStream().use { output ->
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
-                    
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
+            connection.inputStream.buffered().use { input ->
+                FileOutputStream(file).buffered().use { output ->
+                    while (true) {
+                        val bytesRead = input.read(buffer)
+                        if (bytesRead == -1) break
+                        
                         output.write(buffer, 0, bytesRead)
                         totalBytesRead += bytesRead
-                        val progress = if (fileSize > 0) {
-                            totalBytesRead.toFloat() / fileSize
-                        } else {
-                            0f
-                        }
-                        withContext(Dispatchers.Main) {
-                            onProgress(progress)
+                        
+                        // 降低进度回调频率，每读取1MB才更新一次
+                        if (totalBytesRead - lastProgressUpdate >= 1024 * 1024) {
+                            val progress = if (fileSize > 0) {
+                                (totalBytesRead * 100 / fileSize).toInt()
+                            } else 0
+                            println("Download progress: $progress%")
+                            lastProgressUpdate = totalBytesRead
                         }
                     }
                 }
