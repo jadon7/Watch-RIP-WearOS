@@ -283,7 +283,7 @@ fun NetworkScanScreen(
                     shape = androidx.compose.foundation.shape.CircleShape
                 ) {
                     Text(
-                        "取消",
+                        "手动连接",
                         color = androidx.compose.ui.graphics.Color.White,
                         fontSize = 10.sp
                     )
