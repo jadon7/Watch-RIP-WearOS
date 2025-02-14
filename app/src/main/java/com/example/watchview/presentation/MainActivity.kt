@@ -65,6 +65,7 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import com.example.watchview.utils.PreferencesManager
 import android.app.Activity
+import androidx.compose.ui.graphics.Color
 
 // 文件类型枚举，用于区分下载的文件类型
 enum class DownloadType {
@@ -394,6 +395,8 @@ fun DownloadScreen(
 
     // 添加下载进度状态
     var downloadProgress by remember { mutableStateOf(0f) }
+    var downloadSpeed by remember { mutableStateOf("") }
+    var isDownloading by remember { mutableStateOf(false) }
 
     // 添加一个协程作用域来控制扫描任务
     val scanJob = remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
@@ -409,6 +412,7 @@ fun DownloadScreen(
     val handleDownload = { url: String ->
         coroutineScope.launch {
             try {
+                isDownloading = true
                 downloadStatus = "开始下载..."
                 downloadProgress = 0f
                 
@@ -446,6 +450,8 @@ fun DownloadScreen(
             } catch (e: Exception) {
                 downloadStatus = "下载失败: ${e.message}"
                 e.printStackTrace()
+            } finally {
+                isDownloading = false
             }
         }
     }
@@ -549,27 +555,47 @@ fun DownloadScreen(
                     downloadStatus = "下载中..."
                     handleDownload(url)
                 },
+                enabled = !isDownloading,
                 modifier = Modifier
                     .width(300.dp)
-                    .height( 48.dp),
+                    .height(48.dp),
                 colors = ButtonDefaults.buttonColors(
-                    backgroundColor = androidx.compose.ui.graphics.Color(0xFF2196F3)
+                    backgroundColor = androidx.compose.ui.graphics.Color(0xFF2196F3),
+                    disabledBackgroundColor = Color.Gray,
+                    disabledContentColor = Color.White
                 ),
                 shape = androidx.compose.foundation.shape.CircleShape
             ) {
                 Text(
-                    "下载文件",
-                    fontSize = 12.sp,
-                    color = androidx.compose.ui.graphics.Color.White
+                    text = if (isDownloading) "下载中..." else "预览",
+                    color = Color.White,
+                    fontSize = 14.sp
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))  // 按钮与状态文本之间的间距
-            Text(
-                text = downloadStatus,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colors.onBackground,
-                fontSize = 8.sp                  // 状态文本大小
-            )
+            if (isDownloading) {
+                if (downloadProgress > 0) {
+                    Text(
+                        text = "${downloadProgress}%",
+                        color = Color.White,
+                        fontSize = 10.sp
+                    )
+                }
+                if (downloadSpeed.isNotEmpty()) {
+                    Text(
+                        text = downloadSpeed,
+                        color = Color.White,
+                        fontSize = 10.sp
+                    )
+                }
+            } else {
+                Text(
+                    text = downloadStatus,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colors.onBackground,
+                    fontSize = 8.sp                  // 状态文本大小
+                )
+            }
         }
     }
 }
