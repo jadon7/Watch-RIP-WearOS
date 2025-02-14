@@ -60,6 +60,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.CircularProgressIndicator
 import androidx.wear.compose.material.CircularProgressIndicator
+import java.util.zip.ZipFile
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 
 // 文件类型枚举，用于区分下载的文件类型
 enum class DownloadType {
@@ -637,7 +640,7 @@ fun RivePlayer(file: java.io.File) {
 
 // 修改解压函数
 fun unzipMedia(context: Context): List<MediaFile> {
-    println("Starting unzip process") // 调试日志
+    println("Starting unzip process")
     val zipFile = File(context.filesDir, "downloaded_file")
     val outputDir = File(context.filesDir, "unzipped_media").apply {
         deleteRecursively() // 清除旧文件
@@ -646,44 +649,100 @@ fun unzipMedia(context: Context): List<MediaFile> {
     
     val mediaFiles = mutableListOf<MediaFile>()
     try {
-        ZipInputStream(FileInputStream(zipFile)).use { zis ->
-            var entry = zis.nextEntry
-            while (entry != null) {
-                val fileName = entry.name.lowercase()
-                println("Processing zip entry: $fileName") // 调试日志
-                
-                if (!entry.isDirectory) {
-                    val isImage = fileName.endsWith(".jpg") || 
-                                 fileName.endsWith(".jpeg") || 
-                                 fileName.endsWith(".png")
-                    val isVideo = fileName.endsWith(".mp4") || 
-                                 fileName.endsWith(".3gp") || 
-                                 fileName.endsWith(".mkv")
-                    
-                    if (isImage || isVideo) {
-                        val outFile = File(outputDir, fileName)
-                        FileOutputStream(outFile).use { fos ->
-                            zis.copyTo(fos)
-                        }
-                        println("Extracted file: ${outFile.absolutePath}") // 调试日志
-                        
-                        mediaFiles.add(
-                            MediaFile(
-                                file = outFile,
-                                type = if (isImage) MediaType.IMAGE else MediaType.VIDEO
-                            )
-                        )
-                    }
+        println("Opening zip file: ${zipFile.absolutePath}")
+        println("Zip file exists: ${zipFile.exists()}")
+        println("Zip file size: ${zipFile.length()}")
+        
+        val zip = ZipFile(zipFile)
+        println("Total entries in zip: ${zip.size()}")
+        
+        zip.entries().asSequence().forEach { entry ->
+            println("Processing entry: ${entry.name}")
+            
+            // 跳过 MacOS 系统生成的隐藏文件夹
+            if (entry.name.startsWith("__MACOSX") || entry.name.startsWith(".")) {
+                println("Skipping MacOS system file: ${entry.name}")
+                return@forEach
+            }
+            
+            val tempFile = File(outputDir, entry.name)
+            
+            // 解压文件
+            BufferedInputStream(zip.getInputStream(entry)).use { input ->
+                BufferedOutputStream(FileOutputStream(tempFile)).use { output ->
+                    input.copyTo(output)
                 }
-                entry = zis.nextEntry
+            }
+            
+            println("Extracted file: ${tempFile.absolutePath}")
+            
+            // 如果是 zip 文件，继续解压
+            if (tempFile.name.lowercase().endsWith(".zip")) {
+                println("Found nested zip file: ${tempFile.name}")
+                try {
+                    val nestedZip = ZipFile(tempFile)
+                    nestedZip.entries().asSequence().forEach { nestedEntry ->
+                        println("Processing nested entry: ${nestedEntry.name}")
+                        
+                        if (nestedEntry.name.startsWith("__MACOSX") || nestedEntry.name.startsWith(".")) {
+                            return@forEach
+                        }
+                        
+                        val fileName = nestedEntry.name.substringAfterLast('/')
+                        val outFile = File(outputDir, fileName)
+                        
+                        // 解压嵌套的文件
+                        BufferedInputStream(nestedZip.getInputStream(nestedEntry)).use { input ->
+                            BufferedOutputStream(FileOutputStream(outFile)).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        
+                        println("Extracted nested file: ${outFile.absolutePath}")
+                        
+                        // 检查是否为媒体文件
+                        val isImage = fileName.lowercase().let { name ->
+                            name.endsWith(".jpg") || name.endsWith(".jpeg") || 
+                            name.endsWith(".png") || name.endsWith(".gif") || 
+                            name.endsWith(".bmp")
+                        }
+                        val isVideo = fileName.lowercase().let { name ->
+                            name.endsWith(".mp4") || name.endsWith(".avi") || 
+                            name.endsWith(".mov") || name.endsWith(".wmv") || 
+                            name.endsWith(".flv")
+                        }
+                        
+                        if (isImage || isVideo) {
+                            println("Found media file: $fileName")
+                            mediaFiles.add(
+                                MediaFile(
+                                    file = outFile,
+                                    type = if (isImage) MediaType.IMAGE else MediaType.VIDEO
+                                )
+                            )
+                        }
+                    }
+                    nestedZip.close()
+                    tempFile.delete() // 删除临时的嵌套 zip 文件
+                } catch (e: Exception) {
+                    println("Error processing nested zip: ${e.message}")
+                    e.printStackTrace()
+                }
             }
         }
+        
+        zip.close()
+        
     } catch (e: Exception) {
-        println("Unzip error: ${e.message}") // 调试日志
+        println("Unzip error: ${e.message}")
         e.printStackTrace()
     }
     
-    println("Found ${mediaFiles.size} media files") // 调试日志
+    println("Found ${mediaFiles.size} media files")
+    mediaFiles.forEach { 
+        println("Media file: ${it.file.absolutePath}, type: ${it.type}")
+    }
+    
     return mediaFiles
 }
 
