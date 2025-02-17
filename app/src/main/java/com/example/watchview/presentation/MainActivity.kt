@@ -296,7 +296,7 @@ fun NetworkScanScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    "可用服务器",
+                    "可用设备",
                     color = MaterialTheme.colors.onBackground,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 16.dp, bottom = 24.dp)
@@ -527,7 +527,7 @@ fun DownloadScreen(
                 },
                 label = { 
                     Text(
-                        "服务器地址",
+                        "设备地址",
                         fontSize = 12.sp,          // 标签文字大小
                         color = MaterialTheme.colors.onBackground.copy(alpha = 0.3f)
                     )
@@ -647,7 +647,7 @@ suspend fun downloadFile(
             println("Response code: $responseCode")
             
             if (responseCode != HttpURLConnection.HTTP_OK) {
-                throw Exception("服务器返回错误代码: $responseCode")
+                throw Exception("列表返回错误代码: $responseCode")
             }
             
             val contentType = connection.contentType ?: "application/zip"
