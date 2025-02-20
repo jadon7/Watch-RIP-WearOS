@@ -2,13 +2,26 @@ package com.example.watchview.presentation
 
 import android.os.Bundle
 import android.view.MotionEvent
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import com.example.watchview.presentation.theme.WatchViewTheme
 import java.io.File
 import kotlinx.coroutines.delay
@@ -26,11 +39,16 @@ import android.os.BatteryManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.scrollable
+import androidx.compose.foundation.rememberScrollState
 
 class RivePreviewActivity : ComponentActivity() {
-    // 保留类级别的变量用于 onTouchEvent
+    // 修改变量名和注释以反映新的交互方式
     private var touchStartTime = 0L
     private var isTwoFingerPressed = false
+    private var riveView: RiveAnimationView? = null
     
     // 添加电池电量状态
     private val _batteryLevel = MutableStateFlow(0f)
@@ -50,6 +68,16 @@ class RivePreviewActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        // 禁用滑动手势
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        )
+        
         // 注册电池状态广播接收器
         registerReceiver(
             batteryReceiver,
@@ -64,6 +92,94 @@ class RivePreviewActivity : ComponentActivity() {
         
         setContent {
             WatchViewTheme {
+                // 添加对话框状态
+                val showDialog = remember { mutableStateOf(false) }
+                
+                if (showDialog.value) {
+                    Dialog(
+                        onDismissRequest = { showDialog.value = false },
+                        properties = DialogProperties(
+                            dismissOnBackPress = true,
+                            dismissOnClickOutside = true,
+                            securePolicy = SecureFlagPolicy.Inherit,
+                            usePlatformDefaultWidth = false
+                        )
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.9f))
+                                .clickable { showDialog.value = false }
+                                .pointerInput(Unit) {
+                                    awaitPointerEventScope {
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            event.changes.forEach { it.consume() }
+                                        }
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .padding(horizontal = 28.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF2196F3))
+                                        .clickable {
+                                            showDialog.value = false
+                                            // 重新播放当前 Rive 文件
+                                            riveView?.let {
+                                                it.reset()
+                                                it.play()
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    BasicText(
+                                        text = "重新播放",
+                                        modifier = Modifier.padding(horizontal = 16.dp),
+                                        style = androidx.compose.ui.text.TextStyle(
+                                            color = Color.White,
+                                            fontSize = 14.sp
+                                        )
+                                    )
+                                }
+                                
+                                Spacer(modifier = Modifier.height(16.dp))
+                                
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF2196F3))
+                                        .clickable {
+                                            showDialog.value = false
+                                            finish() // 退出预览
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    BasicText(
+                                        text = "退出预览",
+                                        modifier = Modifier.padding(horizontal = 16.dp),
+                                        style = androidx.compose.ui.text.TextStyle(
+                                            color = Color.White,
+                                            fontSize = 14.sp
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -77,16 +193,17 @@ class RivePreviewActivity : ComponentActivity() {
                                             if (!isTwoFingerPressed) {
                                                 touchStartTime = System.currentTimeMillis()
                                                 isTwoFingerPressed = true
-                                            } else {
-                                                // 检查长按时间
-                                                val currentTime = System.currentTimeMillis()
-                                                if (currentTime - touchStartTime >= 1000) {
-                                                    finish()
-                                                }
                                             }
                                         }
-                                        // 任何手指抬起，重置状态
+                                        // 检测到手指抬起
                                         event.changes.any { !it.pressed } -> {
+                                            if (isTwoFingerPressed) {
+                                                val currentTime = System.currentTimeMillis()
+                                                // 如果按下时间小于 300ms，认为是点击
+                                                if (currentTime - touchStartTime < 300) {
+                                                    showDialog.value = true
+                                                }
+                                            }
                                             isTwoFingerPressed = false
                                             touchStartTime = 0
                                         }
@@ -98,7 +215,8 @@ class RivePreviewActivity : ComponentActivity() {
                     // 将电池电量传递给 RivePlayerUI
                     RivePlayerUI(
                         file = File(filePath),
-                        batteryLevel = batteryLevel.collectAsState().value
+                        batteryLevel = batteryLevel.collectAsState().value,
+                        onRiveViewCreated = { view -> riveView = view }
                     )
                 }
             }
@@ -121,20 +239,15 @@ class RivePreviewActivity : ComponentActivity() {
                 }
             }
             MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> {
-                // 手指抬起，重置状态
-                isTwoFingerPressed = false
-                touchStartTime = 0
-            }
-            MotionEvent.ACTION_MOVE -> {
-                // 如果是双指按住状态，检查持续时间
-                if (isTwoFingerPressed && event.pointerCount == 2) {
+                // 手指抬起时检查是否是快速点击
+                if (isTwoFingerPressed) {
                     val currentTime = System.currentTimeMillis()
-                    if (currentTime - touchStartTime >= 1000) { // 1秒
-                        // 触发返回操作
-                        finish()
+                    if (currentTime - touchStartTime < 300) { // 300ms 内的点击认为是快速点击
                         return true
                     }
                 }
+                isTwoFingerPressed = false
+                touchStartTime = 0
             }
         }
         return super.onTouchEvent(event)
@@ -148,7 +261,8 @@ class RivePreviewActivity : ComponentActivity() {
 @Composable
 fun RivePlayerUI(
     file: java.io.File,
-    batteryLevel: Float
+    batteryLevel: Float,
+    onRiveViewCreated: (RiveAnimationView) -> Unit
 ) {
     // 现有的时间状态
     var currentHour by remember { mutableStateOf(Calendar.getInstance().get(Calendar.HOUR_OF_DAY).toFloat()) }
@@ -216,6 +330,7 @@ fun RivePlayerUI(
                 val riveFile = RiveCoreFile(file.readBytes())
                 setRiveFile(riveFile)
                 autoplay = true
+                onRiveViewCreated(this)
 
                 val artboard = riveFile.firstArtboard
                 val smNames = artboard?.stateMachineNames ?: emptyList()
