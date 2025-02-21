@@ -75,4 +75,5 @@ dependencies {
     // 第三方库依赖
     implementation("com.google.accompanist:accompanist-pager:0.28.0")  // 分页组件
     implementation("app.rive:rive-android:9.13.10")                    // Rive 动画支持
+    implementation("androidx.startup:startup-runtime:1.1.1")           // App Startup
 }
