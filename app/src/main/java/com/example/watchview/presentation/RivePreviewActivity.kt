@@ -43,14 +43,58 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.rememberScrollState
+import android.util.Log
+import app.rive.runtime.kotlin.controllers.RiveFileController
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.content.Context.VIBRATOR_MANAGER_SERVICE
+import android.content.Context.VIBRATOR_SERVICE
+import android.os.Build
 
 class RivePreviewActivity : ComponentActivity() {
     // 修改变量名和注释以反映新的交互方式
     private var riveView: RiveAnimationView? = null
+    private lateinit var vibrator: Vibrator
     
     // 添加电池电量状态
     private val _batteryLevel = MutableStateFlow(0f)
     val batteryLevel: StateFlow<Float> = _batteryLevel.asStateFlow()
+
+    // 添加 Rive 事件监听器
+    private val eventListener = object : RiveFileController.RiveEventListener {
+        override fun notifyEvent(event: app.rive.runtime.kotlin.core.RiveEvent) {
+            Log.i("RiveEvent", "Event received: ${event.name}")
+            Log.i("RiveEvent", "Event type: ${event.type}")
+            Log.i("RiveEvent", "Event properties: ${event.properties}")
+            Log.i("RiveEvent", "Event data: ${event.data}")
+            
+            // 检查是否是振动事件
+            if (event.name == "vibratory") {
+                try {
+                    val state = event.properties?.get("state") as? Number
+                    Log.d("RiveEvent", "Vibration state: $state")
+                    if (state?.toDouble() == 1.0) {
+                        Log.d("RiveEvent", "Triggering vibration")
+                        // 在主线程中触发振动
+                        runOnUiThread {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                // 降低振动强度（1-255），设置为较低的值
+                                val amplitude = 100 // 降低振动强度到 50（约20%的强度）
+                                val duration = 40L // 缩短振动时间到 50ms
+                                vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude))
+                            } else {
+                                @Suppress("DEPRECATION")
+                                vibrator.vibrate(50) // 老版本 Android 只调整时长
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("RiveEvent", "Error triggering vibration", e)
+                }
+            }
+        }
+    }
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -65,6 +109,15 @@ class RivePreviewActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 初始化振动器
+        vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vibratorManager = getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            vibratorManager.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(VIBRATOR_SERVICE) as Vibrator
+        }
         
         // 禁用滑动手势
         window.setFlags(
@@ -197,7 +250,8 @@ class RivePreviewActivity : ComponentActivity() {
                     RivePlayerUI(
                         file = File(filePath),
                         batteryLevel = batteryLevel.collectAsState().value,
-                        onRiveViewCreated = { view -> riveView = view }
+                        onRiveViewCreated = { view -> riveView = view },
+                        eventListener = eventListener
                     )
                 }
             }
@@ -208,6 +262,8 @@ class RivePreviewActivity : ComponentActivity() {
         super.onDestroy()
         // 取消注册广播接收器
         unregisterReceiver(batteryReceiver)
+        // 移除 Rive 事件监听器
+        riveView?.removeEventListener(eventListener)
     }
 
     override fun onBackPressed() {
@@ -219,7 +275,8 @@ class RivePreviewActivity : ComponentActivity() {
 fun RivePlayerUI(
     file: java.io.File,
     batteryLevel: Float,
-    onRiveViewCreated: (RiveAnimationView) -> Unit
+    onRiveViewCreated: (RiveAnimationView) -> Unit,
+    eventListener: RiveFileController.RiveEventListener
 ) {
     // 现有的时间状态
     var currentHour by remember { mutableStateOf(Calendar.getInstance().get(Calendar.HOUR_OF_DAY).toFloat()) }
@@ -287,6 +344,8 @@ fun RivePlayerUI(
                 val riveFile = RiveCoreFile(file.readBytes())
                 setRiveFile(riveFile)
                 autoplay = true
+                // 添加事件监听器
+                addEventListener(eventListener)
                 onRiveViewCreated(this)
 
                 val artboard = riveFile.firstArtboard
