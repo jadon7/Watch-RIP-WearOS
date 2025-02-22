@@ -66,6 +66,15 @@ import java.io.BufferedOutputStream
 import com.example.watchview.utils.PreferencesManager
 import android.app.Activity
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.text.KeyboardOptions
+import android.text.InputFilter
+import android.text.Spanned
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.ImeAction
+import android.view.inputmethod.EditorInfo
 
 // 文件类型枚举，用于区分下载的文件类型
 enum class DownloadType {
@@ -522,22 +531,33 @@ fun DownloadScreen(
         ) {
             OutlinedTextField(
                 value = ipAddress,
-                onValueChange = { 
-                    ipAddress = it
+                onValueChange = { newValue -> 
+                    // 只允许输入数字和点号，且长度不超过15
+                    if (newValue.length <= 15 && newValue.all { it.isDigit() || it == '.' }) {
+                        ipAddress = newValue
+                    }
                 },
                 label = { 
                     Text(
                         "设备地址",
-                        fontSize = 12.sp,          // 标签文字大小
+                        fontSize = 12.sp,
                         color = MaterialTheme.colors.onBackground.copy(alpha = 0.3f)
                     )
                 },
                 placeholder = { Text("", color = MaterialTheme.colors.onBackground.copy(alpha = 1f), fontSize = 12.sp) },
                 modifier = Modifier
-                    .fillMaxWidth(),                // 宽度填充父容器
-    //                    .height(48.dp),               // 输入框高度
+                    .fillMaxWidth(),
                 textStyle = androidx.compose.ui.text.TextStyle(
-                    fontSize = 16.sp              // 输入文字大小
+                    fontSize = 16.sp
+                ),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Text,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                    onDone = {
+                        // 可以在这里添加完成输入后的操作
+                    }
                 ),
                 colors = TextFieldDefaults.outlinedTextFieldColors(
                     textColor = MaterialTheme.colors.onBackground,

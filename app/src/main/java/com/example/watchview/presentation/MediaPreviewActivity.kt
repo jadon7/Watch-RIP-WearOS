@@ -1,15 +1,59 @@
 package com.example.watchview.presentation
 
 import android.os.Bundle
+import android.view.InputDevice
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
+import android.view.ViewGroup
+import android.widget.ImageView
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.InputDeviceCompat
+import androidx.core.view.ViewConfigurationCompat
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.PagerSnapHelper
+import androidx.recyclerview.widget.RecyclerView
+import androidx.wear.widget.WearableLinearLayoutManager
+import androidx.wear.widget.WearableRecyclerView
 import com.example.watchview.presentation.theme.WatchViewTheme
+import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 class MediaPreviewActivity : ComponentActivity() {
+    private lateinit var wearableRecyclerView: WearableRecyclerView
+    
+    // 自定义的滚动回调，用于实现渐变缩放效果
+    private inner class CustomScrollingLayoutCallback : WearableLinearLayoutManager.LayoutCallback() {
+        private var progressToCenter: Float = 0f
+        
+        override fun onLayoutFinished(child: View, parent: RecyclerView) {
+            child.apply {
+                // 计算子视图到中心的距离
+                val centerOffset = height.toFloat() / 2.0f
+                val childCenter = (top + bottom) / 2.0f
+                val parentCenter = parent.height / 2.0f
+                progressToCenter = abs(1f - abs(parentCenter - childCenter) / centerOffset)
+                
+                // 应用缩放效果
+                val scale = 0.8f + (0.2f * progressToCenter)
+                scaleX = scale
+                scaleY = scale
+                
+                // 应用透明度效果
+                alpha = 0.5f + (0.5f * progressToCenter)
+            }
+        }
+    }
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
@@ -20,26 +64,154 @@ class MediaPreviewActivity : ComponentActivity() {
         val mediaFiles = intent.getStringArrayListExtra("media_files") ?: arrayListOf()
         val mediaTypes = intent.getStringArrayListExtra("media_types") ?: arrayListOf()
         
-        setContent {
-            WatchViewTheme {
-                Box(
-                    modifier = Modifier.fillMaxSize()
+        // 将路径和类型转换为 MediaFile 列表
+        val mediaList = mediaFiles.zip(mediaTypes).map { (path, type) ->
+            MediaFile(
+                file = java.io.File(path),
+                type = MediaType.valueOf(type)
+            )
+        }
+
+        // 创建并配置 WearableRecyclerView
+        wearableRecyclerView = WearableRecyclerView(this).apply {
+            // 设置视图为可聚焦
+            isFocusable = true
+            isFocusableInTouchMode = true
+
+            // 使用自定义的 LayoutManager
+            layoutManager = WearableLinearLayoutManager(context, CustomScrollingLayoutCallback())
+            isVerticalScrollBarEnabled = false
+            isEdgeItemsCenteringEnabled = true
+            
+            // 添加 PagerSnapHelper 实现翻页效果
+            PagerSnapHelper().attachToRecyclerView(this)
+            
+            // 设置旋钮事件监听器
+            setOnGenericMotionListener { v, ev ->
+                if (ev.action == MotionEvent.ACTION_SCROLL &&
+                    ev.isFromSource(InputDeviceCompat.SOURCE_ROTARY_ENCODER)
                 ) {
-                    // 使用现有的 ZipViewer 组件
-                    ZipViewer(
-                        media = mediaFiles.zip(mediaTypes).map { (path, type) ->
-                            MediaFile(
-                                file = java.io.File(path),
-                                type = MediaType.valueOf(type)
+                    // 获取滚动增量（注意负号）
+                    val delta = -ev.getAxisValue(MotionEvent.AXIS_SCROLL) *
+                            ViewConfigurationCompat.getScaledVerticalScrollFactor(
+                                ViewConfiguration.get(context), context
                             )
-                        }
-                    )
+                    
+                    // 执行滚动
+                    v.scrollBy(0, delta.roundToInt())
+                    true
+                } else {
+                    false
                 }
             }
+            
+            adapter = object : RecyclerView.Adapter<MediaViewHolder>() {
+                override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MediaViewHolder {
+                    val layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        parent.height  // 设置高度为父容器高度，确保每个item填充整个屏幕
+                    )
+                    
+                    return when (viewType) {
+                        MediaType.IMAGE.ordinal -> {
+                            val imageView = ImageView(context).apply {
+                                this.layoutParams = layoutParams
+                                scaleType = ImageView.ScaleType.FIT_CENTER
+                            }
+                            MediaViewHolder.ImageViewHolder(imageView)
+                        }
+                        else -> { // VIDEO
+                            val videoView = VideoView(context).apply {
+                                this.layoutParams = layoutParams
+                            }
+                            MediaViewHolder.VideoViewHolder(videoView)
+                        }
+                    }
+                }
+
+                override fun onBindViewHolder(holder: MediaViewHolder, position: Int) {
+                    val media = mediaList[position]
+                    when (holder) {
+                        is MediaViewHolder.ImageViewHolder -> {
+                            val bitmap = android.graphics.BitmapFactory.decodeFile(media.file.absolutePath)
+                            holder.imageView.setImageBitmap(bitmap)
+                        }
+                        is MediaViewHolder.VideoViewHolder -> {
+                            holder.videoView.apply {
+                                setVideoPath(media.file.absolutePath)
+                                setOnPreparedListener { mediaPlayer ->
+                                    mediaPlayer.isLooping = true
+                                    start()
+                                }
+                            }
+                        }
+                    }
+                }
+
+                override fun getItemCount() = mediaList.size
+
+                override fun getItemViewType(position: Int): Int {
+                    return mediaList[position].type.ordinal
+                }
+            }
+            
+            // 添加滚动监听器来处理视频播放
+            addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                private var currentPlayingPosition = 0
+                
+                override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                    super.onScrollStateChanged(recyclerView, newState)
+                    if (newState == RecyclerView.SCROLL_STATE_IDLE) {
+                        // 获取当前中心位置的item
+                        val layoutManager = recyclerView.layoutManager as LinearLayoutManager
+                        val centerPosition = layoutManager.findFirstVisibleItemPosition()
+                        
+                        if (centerPosition != currentPlayingPosition) {
+                            // 暂停之前的视频
+                            val previousHolder = recyclerView.findViewHolderForAdapterPosition(currentPlayingPosition)
+                            if (previousHolder is MediaViewHolder.VideoViewHolder) {
+                                previousHolder.videoView.pause()
+                            }
+                            
+                            // 播放当前位置的视频
+                            val currentHolder = recyclerView.findViewHolderForAdapterPosition(centerPosition)
+                            if (currentHolder is MediaViewHolder.VideoViewHolder) {
+                                currentHolder.videoView.start()
+                            }
+                            
+                            currentPlayingPosition = centerPosition
+                        }
+                    }
+                }
+            })
         }
+
+        // 使用 ComposeView 作为容器
+        setContentView(ComposeView(this).apply {
+            setContent {
+                WatchViewTheme {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        AndroidView(
+                            factory = { 
+                                wearableRecyclerView.apply {
+                                    // 请求焦点
+                                    requestFocus()
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+            }
+        })
     }
 
     override fun onBackPressed() {
         super.onBackPressed()
     }
+}
+
+sealed class MediaViewHolder(itemView: android.view.View) : RecyclerView.ViewHolder(itemView) {
+    class ImageViewHolder(val imageView: ImageView) : MediaViewHolder(imageView)
+    class VideoViewHolder(val videoView: VideoView) : MediaViewHolder(videoView)
 } 

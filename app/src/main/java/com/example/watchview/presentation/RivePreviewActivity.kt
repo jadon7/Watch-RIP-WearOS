@@ -46,8 +46,6 @@ import androidx.compose.foundation.rememberScrollState
 
 class RivePreviewActivity : ComponentActivity() {
     // 修改变量名和注释以反映新的交互方式
-    private var touchStartTime = 0L
-    private var isTwoFingerPressed = false
     private var riveView: RiveAnimationView? = null
     
     // 添加电池电量状态
@@ -187,26 +185,9 @@ class RivePreviewActivity : ComponentActivity() {
                             awaitPointerEventScope {
                                 while (true) {
                                     val event = awaitPointerEvent()
-                                    when {
-                                        // 检测到两个手指按下
-                                        event.changes.size == 2 && event.changes.all { it.pressed } -> {
-                                            if (!isTwoFingerPressed) {
-                                                touchStartTime = System.currentTimeMillis()
-                                                isTwoFingerPressed = true
-                                            }
-                                        }
-                                        // 检测到手指抬起
-                                        event.changes.any { !it.pressed } -> {
-                                            if (isTwoFingerPressed) {
-                                                val currentTime = System.currentTimeMillis()
-                                                // 如果按下时间小于 300ms，认为是点击
-                                                if (currentTime - touchStartTime < 300) {
-                                                    showDialog.value = true
-                                                }
-                                            }
-                                            isTwoFingerPressed = false
-                                            touchStartTime = 0
-                                        }
+                                    // 只检测双指点击
+                                    if (event.changes.size == 2) {
+                                        showDialog.value = true
                                     }
                                 }
                             }
@@ -227,30 +208,6 @@ class RivePreviewActivity : ComponentActivity() {
         super.onDestroy()
         // 取消注册广播接收器
         unregisterReceiver(batteryReceiver)
-    }
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.actionMasked) {
-            MotionEvent.ACTION_POINTER_DOWN -> {
-                // 检测到第二个手指按下
-                if (event.pointerCount == 2) {
-                    touchStartTime = System.currentTimeMillis()
-                    isTwoFingerPressed = true
-                }
-            }
-            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> {
-                // 手指抬起时检查是否是快速点击
-                if (isTwoFingerPressed) {
-                    val currentTime = System.currentTimeMillis()
-                    if (currentTime - touchStartTime < 300) { // 300ms 内的点击认为是快速点击
-                        return true
-                    }
-                }
-                isTwoFingerPressed = false
-                touchStartTime = 0
-            }
-        }
-        return super.onTouchEvent(event)
     }
 
     override fun onBackPressed() {
