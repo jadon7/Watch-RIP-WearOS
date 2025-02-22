@@ -27,9 +27,11 @@ import com.example.watchview.presentation.theme.WatchViewTheme
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
+import android.util.Log
 
 class MediaPreviewActivity : ComponentActivity() {
     private lateinit var wearableRecyclerView: WearableRecyclerView
+    private var currentPosition = 0
     
     // 自定义的滚动回调，用于实现渐变缩放效果
     private inner class CustomScrollingLayoutCallback : WearableLinearLayoutManager.LayoutCallback() {
@@ -44,12 +46,12 @@ class MediaPreviewActivity : ComponentActivity() {
                 progressToCenter = abs(1f - abs(parentCenter - childCenter) / centerOffset)
                 
                 // 应用缩放效果
-                val scale = 0.8f + (0.2f * progressToCenter)
+                val scale = 0.85f + (0.15f * progressToCenter)
                 scaleX = scale
                 scaleY = scale
                 
                 // 应用透明度效果
-                alpha = 0.5f + (0.5f * progressToCenter)
+                alpha = 0.6f + (0.4f * progressToCenter)
             }
         }
     }
@@ -78,32 +80,23 @@ class MediaPreviewActivity : ComponentActivity() {
             isFocusable = true
             isFocusableInTouchMode = true
 
-            // 使用自定义的 LayoutManager
-            layoutManager = WearableLinearLayoutManager(context, CustomScrollingLayoutCallback())
+            // 使用自定义的 LayoutManager，设置较小的滚动阻尼
+            val layoutManager = WearableLinearLayoutManager(context, CustomScrollingLayoutCallback())
+            layoutManager.apply {
+                // 设置较小的滚动阻尼，使滚动更流畅
+                setScrollDegreesPerScreen(90f)
+            }
+            this.layoutManager = layoutManager
+            
             isVerticalScrollBarEnabled = false
             isEdgeItemsCenteringEnabled = true
             
-            // 添加 PagerSnapHelper 实现翻页效果
-            PagerSnapHelper().attachToRecyclerView(this)
+            // 添加 PagerSnapHelper 实现翻页效果，但设置较大的阈值
+            val snapHelper = PagerSnapHelper()
+            snapHelper.attachToRecyclerView(this)
             
-            // 设置旋钮事件监听器
-            setOnGenericMotionListener { v, ev ->
-                if (ev.action == MotionEvent.ACTION_SCROLL &&
-                    ev.isFromSource(InputDeviceCompat.SOURCE_ROTARY_ENCODER)
-                ) {
-                    // 获取滚动增量（注意负号）
-                    val delta = -ev.getAxisValue(MotionEvent.AXIS_SCROLL) *
-                            ViewConfigurationCompat.getScaledVerticalScrollFactor(
-                                ViewConfiguration.get(context), context
-                            )
-                    
-                    // 执行滚动
-                    v.scrollBy(0, delta.roundToInt())
-                    true
-                } else {
-                    false
-                }
-            }
+            // 请求焦点以接收旋钮事件
+            requestFocus()
             
             adapter = object : RecyclerView.Adapter<MediaViewHolder>() {
                 override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MediaViewHolder {
@@ -155,31 +148,53 @@ class MediaPreviewActivity : ComponentActivity() {
                 }
             }
             
-            // 添加滚动监听器来处理视频播放
+            // 添加滚动监听器来处理视频播放和更新当前位置，并记录滚动状态
             addOnScrollListener(object : RecyclerView.OnScrollListener() {
                 private var currentPlayingPosition = 0
+                private var lastScrollPosition = 0f
+                
+                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                    super.onScrolled(recyclerView, dx, dy)
+                    // 记录滚动位置和速度
+                    val firstVisibleItem = (recyclerView.layoutManager as LinearLayoutManager).findFirstVisibleItemPosition()
+                    val firstVisibleItemView = recyclerView.layoutManager?.findViewByPosition(firstVisibleItem)
+                    val offset = firstVisibleItemView?.top ?: 0
+                    
+                    Log.d("ScrollDebug", "Scrolled: dx=$dx, dy=$dy, position=$firstVisibleItem, offset=$offset")
+                }
                 
                 override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                     super.onScrollStateChanged(recyclerView, newState)
-                    if (newState == RecyclerView.SCROLL_STATE_IDLE) {
-                        // 获取当前中心位置的item
-                        val layoutManager = recyclerView.layoutManager as LinearLayoutManager
-                        val centerPosition = layoutManager.findFirstVisibleItemPosition()
-                        
-                        if (centerPosition != currentPlayingPosition) {
-                            // 暂停之前的视频
-                            val previousHolder = recyclerView.findViewHolderForAdapterPosition(currentPlayingPosition)
-                            if (previousHolder is MediaViewHolder.VideoViewHolder) {
-                                previousHolder.videoView.pause()
-                            }
+                    when (newState) {
+                        RecyclerView.SCROLL_STATE_IDLE -> {
+                            Log.d("ScrollDebug", "Scroll State: IDLE")
+                            // 获取当前中心位置的item
+                            val layoutManager = recyclerView.layoutManager as LinearLayoutManager
+                            val centerPosition = layoutManager.findFirstVisibleItemPosition()
+                            currentPosition = centerPosition
                             
-                            // 播放当前位置的视频
-                            val currentHolder = recyclerView.findViewHolderForAdapterPosition(centerPosition)
-                            if (currentHolder is MediaViewHolder.VideoViewHolder) {
-                                currentHolder.videoView.start()
+                            if (centerPosition != currentPlayingPosition) {
+                                Log.d("ScrollDebug", "Switching video: from $currentPlayingPosition to $centerPosition")
+                                // 暂停之前的视频
+                                val previousHolder = recyclerView.findViewHolderForAdapterPosition(currentPlayingPosition)
+                                if (previousHolder is MediaViewHolder.VideoViewHolder) {
+                                    previousHolder.videoView.pause()
+                                }
+                                
+                                // 播放当前位置的视频
+                                val currentHolder = recyclerView.findViewHolderForAdapterPosition(centerPosition)
+                                if (currentHolder is MediaViewHolder.VideoViewHolder) {
+                                    currentHolder.videoView.start()
+                                }
+                                
+                                currentPlayingPosition = centerPosition
                             }
-                            
-                            currentPlayingPosition = centerPosition
+                        }
+                        RecyclerView.SCROLL_STATE_DRAGGING -> {
+                            Log.d("ScrollDebug", "Scroll State: DRAGGING")
+                        }
+                        RecyclerView.SCROLL_STATE_SETTLING -> {
+                            Log.d("ScrollDebug", "Scroll State: SETTLING")
                         }
                     }
                 }
@@ -194,8 +209,8 @@ class MediaPreviewActivity : ComponentActivity() {
                         AndroidView(
                             factory = { 
                                 wearableRecyclerView.apply {
-                                    // 请求焦点
-                                    requestFocus()
+                                    // 确保在 UI 线程中请求焦点
+                                    post { requestFocus() }
                                 }
                             },
                             modifier = Modifier.fillMaxSize()
@@ -206,8 +221,34 @@ class MediaPreviewActivity : ComponentActivity() {
         })
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 在 Activity 恢复时也请求焦点
+        wearableRecyclerView.requestFocus()
+    }
+
     override fun onBackPressed() {
         super.onBackPressed()
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        Log.d("RotaryScroll", "Activity received motion event: ${event.action}")
+        if (event.action == MotionEvent.ACTION_SCROLL &&
+            event.isFromSource(InputDeviceCompat.SOURCE_ROTARY_ENCODER)
+        ) {
+            Log.d("RotaryScroll", "Processing rotary event in Activity")
+            val delta = -event.getAxisValue(MotionEvent.AXIS_SCROLL)
+            Log.d("RotaryScroll", "Raw delta: $delta")
+            
+            // 将旋转角度转换为滚动距离
+            val scrollAmount = (delta * 3000).toInt() // 调整这个乘数可以改变滚动灵敏度
+            Log.d("RotaryScroll", "Scroll amount: $scrollAmount")
+            
+            // 使用 smoothScrollBy 进行平滑滚动
+            wearableRecyclerView.smoothScrollBy(0, scrollAmount)
+            return true
+        }
+        return super.onGenericMotionEvent(event)
     }
 }
 
