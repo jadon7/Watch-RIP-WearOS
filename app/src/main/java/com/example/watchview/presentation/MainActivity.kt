@@ -13,9 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.Button
-import androidx.compose.material.OutlinedTextField
-import androidx.compose.material.Text
+import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,53 +26,42 @@ import androidx.wear.compose.material.TimeText
 import androidx.wear.tooling.preview.devices.WearDevices
 import com.example.watchview.R
 import com.example.watchview.presentation.theme.WatchViewTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
+import kotlinx.coroutines.*
+import java.io.*
+import java.net.*
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.material.TextFieldDefaults
 import android.widget.VideoView
 import android.media.MediaPlayer
 import androidx.compose.ui.viewinterop.AndroidView
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.util.zip.ZipInputStream
-import com.google.accompanist.pager.ExperimentalPagerApi
-import com.google.accompanist.pager.VerticalPager
-import com.google.accompanist.pager.rememberPagerState
+import com.google.accompanist.pager.*
 import app.rive.runtime.kotlin.core.File as RiveCoreFile
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import java.net.InetSocketAddress
-import java.net.Socket
-import java.net.InetAddress
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.ButtonDefaults
-import androidx.compose.material.CircularProgressIndicator
 import androidx.wear.compose.material.CircularProgressIndicator
 import java.util.zip.ZipFile
-import java.io.BufferedInputStream
-import java.io.BufferedOutputStream
 import com.example.watchview.utils.PreferencesManager
 import android.app.Activity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.text.KeyboardOptions
 import android.text.InputFilter
 import android.text.Spanned
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.input.TransformedText
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.*
 import android.view.inputmethod.EditorInfo
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.*
+import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.platform.LocalDensity
 
 // 文件类型枚举，用于区分下载的文件类型
 enum class DownloadType {
@@ -107,6 +94,13 @@ sealed class PreviewType {
     data class MediaPreview(val mediaFiles: List<MediaFile>) : PreviewType()
     data class RivePreview(val riveFile: File) : PreviewType()
 }
+
+// 在 SavedRiveFilesScreen 之前添加新的数据类和函数
+data class SavedRiveFile(
+    val name: String,
+    val file: File,
+    val lastModified: Long
+)
 
 // 主 Activity
 class MainActivity : ComponentActivity() {
@@ -386,7 +380,182 @@ fun NetworkScanScreen(
     }
 }
 
+// 在 DownloadScreen 函数之前添加新的组件
+@Composable
+fun PageIndicator(
+    pageCount: Int,
+    currentPage: Int,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        repeat(pageCount) { index ->
+            Box(
+                modifier = Modifier
+                    .padding(4.dp)
+                    .size(if (currentPage == index) 6.dp else 4.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (currentPage == index)
+                            MaterialTheme.colors.primary
+                        else
+                            MaterialTheme.colors.primary.copy(alpha = 0.5f)
+                    )
+            )
+        }
+    }
+}
+
+@Composable
+fun SavedRiveFilesScreen() {
+    var savedFiles by remember { mutableStateOf<List<SavedRiveFile>>(emptyList()) }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    
+    // 加载保存的文件
+    LaunchedEffect(Unit) {
+        val filesDir = File(context.filesDir, "saved_rive")
+        if (!filesDir.exists()) {
+            filesDir.mkdirs()
+        }
+        
+        savedFiles = filesDir.listFiles()
+            ?.filter { it.name.endsWith(".riv") }
+            ?.map { file ->
+                SavedRiveFile(
+                    name = file.name,
+                    file = file,
+                    lastModified = file.lastModified()
+                )
+            }
+            ?.sortedByDescending { it.lastModified }
+            ?: emptyList()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colors.background)
+            .padding(horizontal = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "已保存",
+            color = MaterialTheme.colors.onBackground,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 16.dp, bottom = 24.dp)
+        )
+        
+        if (savedFiles.isEmpty()) {
+            Text(
+                text = "暂无保存的文件",
+                color = MaterialTheme.colors.onBackground.copy(alpha = 0.6f),
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 16.dp)
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(
+                    items = savedFiles,
+                    key = { it.file.absolutePath }
+                ) { savedFile ->
+                    var offsetX by remember { mutableStateOf(0f) }
+                    var isDeleting by remember { mutableStateOf(false) }
+                    
+                    // 添加动画状态
+                    val offsetXAnimated by animateFloatAsState(
+                        targetValue = if (isDeleting) -1000f else offsetX,
+                        animationSpec = if (isDeleting) 
+                            tween(durationMillis = 300, easing = FastOutSlowInEasing)
+                        else 
+                            spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = Spring.StiffnessLow
+                            )
+                    )
+                    
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .offset { IntOffset(offsetXAnimated.roundToInt(), 0) }
+                            .pointerInput(Unit) {
+                                detectHorizontalDragGestures(
+                                    onDragEnd = {
+                                        if (offsetX < -200) {  // 如果滑动超过阈值
+                                            isDeleting = true
+                                            // 等待动画完成后再删除文件
+                                            coroutineScope.launch {
+                                                delay(300) // 等待动画完成
+                                                savedFile.file.delete()
+                                                savedFiles = savedFiles.filter { it.file != savedFile.file }
+                                            }
+                                        } else {
+                                            // 回弹
+                                            offsetX = 0f
+                                        }
+                                    },
+                                    onDragCancel = {
+                                        offsetX = 0f
+                                    }
+                                ) { change, dragAmount ->
+                                    change.consumeAllChanges()
+                                    if (!isDeleting) {  // 只在非删除状态下更新偏移
+                                        val newOffset = (offsetX + dragAmount).coerceAtMost(0f)
+                                        offsetX = newOffset
+                                    }
+                                }
+                            }
+                            .animateContentSize()
+                    ) {
+                        // 删除按钮背景
+                        if (offsetX < 0) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Red.copy(alpha = 0.3f))
+                                    .align(Alignment.CenterEnd)
+                            )
+                        }
+                        
+                        // 文件项按钮
+                        Button(
+                            onClick = {
+                                // 启动 Rive 预览 Activity
+                                val intent = android.content.Intent(context, RivePreviewActivity::class.java).apply {
+                                    putExtra("file_path", savedFile.file.absolutePath)
+                                }
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                backgroundColor = Color(0xFF2196F3).copy(alpha = 0.3f)
+                            ),
+                            shape = CircleShape
+                        ) {
+                            Text(
+                                text = savedFile.name,
+                                color = Color(0xFF2196F3),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // 修改 DownloadScreen 函数
+@OptIn(ExperimentalPagerApi::class)
 @Composable
 fun DownloadScreen(
     isWifiConnected: Boolean,
@@ -397,9 +566,12 @@ fun DownloadScreen(
     var isScanning by remember { mutableStateOf(true) }
     var servers by remember { mutableStateOf<List<ServerAddress>>(emptyList()) }
     var ipAddress by remember { mutableStateOf(initialIpAddress) }
-    var downloadStatus by remember { mutableStateOf("") }   // 下载状态显示
+    var downloadStatus by remember { mutableStateOf("") }
     val coroutineScope = rememberCoroutineScope()
-
+    
+    // 添加水平分页状态
+    val pagerState = rememberPagerState()
+    
     val context = LocalContext.current
 
     // 添加下载进度状态
@@ -425,6 +597,13 @@ fun DownloadScreen(
                 downloadStatus = "开始下载..."
                 downloadProgress = 0f
                 
+                // 清理旧文件
+                context.filesDir.listFiles()?.forEach { file ->
+                    if (file.name != "saved_rive" && (file.name.endsWith(".riv") || file.name.endsWith(".zip"))) {
+                        file.delete()
+                    }
+                }
+                
                 val downloadType = downloadFile(context, url) { progress ->
                     downloadProgress = progress
                     downloadStatus = "下载中... ${(progress * 100).toInt()}%"
@@ -447,12 +626,20 @@ fun DownloadScreen(
                         }
                     }
                     DownloadType.RIVE -> {
-                        downloadStatus = ""
-                        // 启动 Rive 预览 Activity，移除过渡动画
-                        val intent = android.content.Intent(context, RivePreviewActivity::class.java).apply {
-                            putExtra("file_path", File(context.filesDir, "downloaded_file").absolutePath)
+                        // 获取下载的文件
+                        val files = context.filesDir.listFiles()
+                        val tempFile = files?.firstOrNull { it.name != "saved_rive" && it.name.endsWith(".riv") }
+                        if (tempFile != null) {
+                            downloadStatus = ""
+                            // 启动 Rive 预览 Activity，使用临时文件路径
+                            val intent = android.content.Intent(context, RivePreviewActivity::class.java).apply {
+                                putExtra("file_path", tempFile.absolutePath)
+                                putExtra("is_temp_file", true)  // 添加标记表明这是临时文件
+                            }
+                            context.startActivity(intent)
+                        } else {
+                            downloadStatus = "找不到下载的文件"
                         }
-                        context.startActivity(intent)
                     }
                     else -> downloadStatus = "不支持的文件类型"
                 }
@@ -476,147 +663,169 @@ fun DownloadScreen(
         }
     }
 
-    if (!isWifiConnected) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colors.background),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "请连接 Wi-Fi 后继续",
-                color = MaterialTheme.colors.primary,
-                fontSize = 14.sp,
-            )
-        }
-        return // 提前返回，不渲染下面内容
-    } else if (showScanScreen) {
-        NetworkScanScreen(
-            servers = servers,
-            isScanning = isScanning,
-            onServerSelected = { server ->
-                if (server.isManualInput) {
-                    showScanScreen = false
-                } else {
-                    ipAddress = server.ip
-                    showScanScreen = false
-                    // 自动开始下载
-                    handleDownload("http://$ipAddress:8080")
-                }
-            },
-            onCancelScan = {
-                // 取消当前扫描任务
-                scanJob.value?.cancel()
-                if (isScanning) {
-                    // 如果是在扫描过程中取消，进入输入界面
-                    showScanScreen = false
-                } else {
-                    // 如果是点击重新扫描，重新开始扫描
-                    isScanning = true
-                    scanJob.value = coroutineScope.launch {
-                        servers = scanLocalNetwork(context)
-                        isScanning = false
+    Column(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        // 使用 HorizontalPager 进行水平分页
+        HorizontalPager(
+            count = 2,
+            state = pagerState,
+            modifier = Modifier.weight(1f)
+        ) { page ->
+            when (page) {
+                0 -> {
+                    // 第一页：扫描和输入页面
+                    if (!isWifiConnected) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colors.background),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "请连接 Wi-Fi 后继续",
+                                color = MaterialTheme.colors.primary,
+                                fontSize = 14.sp,
+                            )
+                        }
+                    } else if (showScanScreen) {
+                        NetworkScanScreen(
+                            servers = servers,
+                            isScanning = isScanning,
+                            onServerSelected = { server ->
+                                if (server.isManualInput) {
+                                    showScanScreen = false
+                                } else {
+                                    ipAddress = server.ip
+                                    showScanScreen = false
+                                    handleDownload("http://$ipAddress:8080")
+                                }
+                            },
+                            onCancelScan = {
+                                scanJob.value?.cancel()
+                                if (isScanning) {
+                                    showScanScreen = false
+                                } else {
+                                    isScanning = true
+                                    scanJob.value = coroutineScope.launch {
+                                        servers = scanLocalNetwork(context)
+                                        isScanning = false
+                                    }
+                                }
+                            }
+                        )
+                    } else {
+                        // 手动输入页面
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colors.background)
+                                .padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            OutlinedTextField(
+                                value = ipAddress,
+                                onValueChange = { newValue -> 
+                                    // 只允许输入数字和点号，且长度不超过15
+                                    if (newValue.length <= 15 && newValue.all { it.isDigit() || it == '.' }) {
+                                        ipAddress = newValue
+                                    }
+                                },
+                                label = { 
+                                    Text(
+                                        "设备地址",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colors.onBackground.copy(alpha = 0.3f)
+                                    )
+                                },
+                                placeholder = { Text("", color = MaterialTheme.colors.onBackground.copy(alpha = 1f), fontSize = 12.sp) },
+                                modifier = Modifier
+                                    .fillMaxWidth(),
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    fontSize = 16.sp
+                                ),
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Text,
+                                    imeAction = ImeAction.Done
+                                ),
+                                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                                    onDone = {
+                                        // 可以在这里添加完成输入后的操作
+                                    }
+                                ),
+                                colors = TextFieldDefaults.outlinedTextFieldColors(
+                                    textColor = MaterialTheme.colors.onBackground,
+                                    cursorColor = MaterialTheme.colors.primary,
+                                    focusedBorderColor = MaterialTheme.colors.primary,
+                                    unfocusedBorderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.2f),
+                                    placeholderColor = MaterialTheme.colors.onBackground.copy(alpha = 1f)
+                                ),
+                                singleLine = true
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))  // 输入框与按钮之间的间距
+                            Button(
+                                onClick = {
+                                    val url = "http://$ipAddress:8080"
+                                    downloadStatus = "下载中..."
+                                    handleDownload(url)
+                                },
+                                enabled = !isDownloading,
+                                modifier = Modifier
+                                    .width(300.dp)
+                                    .height(48.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    backgroundColor = androidx.compose.ui.graphics.Color(0xFF2196F3),
+                                    disabledBackgroundColor = Color.Gray,
+                                    disabledContentColor = Color.White
+                                ),
+                                shape = androidx.compose.foundation.shape.CircleShape
+                            ) {
+                                Text(
+                                    text = if (isDownloading) "下载中..." else "预览",
+                                    color = Color.White,
+                                    fontSize = 14.sp
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))  // 按钮与状态文本之间的间距
+                            if (isDownloading) {
+                                if (downloadProgress > 0) {
+                                    Text(
+                                        text = "${downloadProgress}%",
+                                        color = Color.White,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                                if (downloadSpeed.isNotEmpty()) {
+                                    Text(
+                                        text = downloadSpeed,
+                                        color = Color.White,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = downloadStatus,
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colors.onBackground,
+                                    fontSize = 8.sp                  // 状态文本大小
+                                )
+                            }
+                        }
                     }
                 }
+                1 -> SavedRiveFilesScreen()  // 第二页：已保存的 Rive 文件页面
             }
+        }
+        
+        // 添加底部指示器
+        PageIndicator(
+            pageCount = 2,
+            currentPage = pagerState.currentPage,
+            modifier = Modifier
+                .align(Alignment.CenterHorizontally)
+                .padding(bottom = 16.dp)
         )
-    } else {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colors.background)
-                .padding(28.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            OutlinedTextField(
-                value = ipAddress,
-                onValueChange = { newValue -> 
-                    // 只允许输入数字和点号，且长度不超过15
-                    if (newValue.length <= 15 && newValue.all { it.isDigit() || it == '.' }) {
-                        ipAddress = newValue
-                    }
-                },
-                label = { 
-                    Text(
-                        "设备地址",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colors.onBackground.copy(alpha = 0.3f)
-                    )
-                },
-                placeholder = { Text("", color = MaterialTheme.colors.onBackground.copy(alpha = 1f), fontSize = 12.sp) },
-                modifier = Modifier
-                    .fillMaxWidth(),
-                textStyle = androidx.compose.ui.text.TextStyle(
-                    fontSize = 16.sp
-                ),
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Text,
-                    imeAction = ImeAction.Done
-                ),
-                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                    onDone = {
-                        // 可以在这里添加完成输入后的操作
-                    }
-                ),
-                colors = TextFieldDefaults.outlinedTextFieldColors(
-                    textColor = MaterialTheme.colors.onBackground,
-                    cursorColor = MaterialTheme.colors.primary,
-                    focusedBorderColor = MaterialTheme.colors.primary,
-                    unfocusedBorderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.2f),
-                    placeholderColor = MaterialTheme.colors.onBackground.copy(alpha = 1f)
-                ),
-                singleLine = true
-            )
-            Spacer(modifier = Modifier.height(6.dp))  // 输入框与按钮之间的间距
-            Button(
-                onClick = {
-                    val url = "http://$ipAddress:8080"
-                    downloadStatus = "下载中..."
-                    handleDownload(url)
-                },
-                enabled = !isDownloading,
-                modifier = Modifier
-                    .width(300.dp)
-                    .height(48.dp),
-                colors = ButtonDefaults.buttonColors(
-                    backgroundColor = androidx.compose.ui.graphics.Color(0xFF2196F3),
-                    disabledBackgroundColor = Color.Gray,
-                    disabledContentColor = Color.White
-                ),
-                shape = androidx.compose.foundation.shape.CircleShape
-            ) {
-                Text(
-                    text = if (isDownloading) "下载中..." else "预览",
-                    color = Color.White,
-                    fontSize = 14.sp
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))  // 按钮与状态文本之间的间距
-            if (isDownloading) {
-                if (downloadProgress > 0) {
-                    Text(
-                        text = "${downloadProgress}%",
-                        color = Color.White,
-                        fontSize = 10.sp
-                    )
-                }
-                if (downloadSpeed.isNotEmpty()) {
-                    Text(
-                        text = downloadSpeed,
-                        color = Color.White,
-                        fontSize = 10.sp
-                    )
-                }
-            } else {
-                Text(
-                    text = downloadStatus,
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colors.onBackground,
-                    fontSize = 8.sp                  // 状态文本大小
-                )
-            }
-        }
     }
 }
 
@@ -631,7 +840,7 @@ private fun isRiveFile(file: File): Boolean {
     }
 }
 
-// 在 downloadFile 函数中修改文件类型判断逻辑
+// 修改文件类型判断逻辑
 suspend fun downloadFile(
     context: Context, 
     urlString: String,
@@ -674,8 +883,19 @@ suspend fun downloadFile(
             val fileSize = connection.contentLength.toLong()
             println("Content type: $contentType, File size: $fileSize bytes")
             
+            // 获取原始文件名
+            var originalFileName = "downloaded_file"
+            val contentDisposition = connection.getHeaderField("Content-Disposition")
+            if (contentDisposition != null) {
+                val pattern = "filename[^;=\\n]*=((['\"]).*?\\2|[^;\\n]*)".toRegex()
+                val matchResult = pattern.find(contentDisposition)
+                if (matchResult != null) {
+                    originalFileName = matchResult.groupValues[1].trim('"', '\'')
+                }
+            }
+            
             // 创建输出文件
-            val file = File(context.filesDir, "downloaded_file")
+            val tempFile = File(context.filesDir, originalFileName)
             
             // 使用更大的缓冲区(1MB)进行读写
             val buffer = ByteArray(1024 * 1024)
@@ -683,7 +903,7 @@ suspend fun downloadFile(
             var totalBytesRead = 0L
             
             connection.inputStream.buffered().use { input ->
-                FileOutputStream(file).buffered().use { output ->
+                FileOutputStream(tempFile).buffered().use { output ->
                     while (true) {
                         val bytesRead = input.read(buffer)
                         if (bytesRead == -1) break
@@ -694,9 +914,10 @@ suspend fun downloadFile(
                         // 降低进度回调频率，每读取1MB才更新一次
                         if (totalBytesRead - lastProgressUpdate >= 1024 * 1024) {
                             val progress = if (fileSize > 0) {
-                                (totalBytesRead * 100 / fileSize).toInt()
-                            } else 0
-                            println("Download progress: $progress%")
+                                totalBytesRead.toFloat() / fileSize
+                            } else 0f
+                            onProgress(progress)
+                            println("Download progress: ${(progress * 100).toInt()}%")
                             lastProgressUpdate = totalBytesRead
                         }
                     }
@@ -708,10 +929,12 @@ suspend fun downloadFile(
             // 修改文件类型判断逻辑
             val fileType = when {
                 contentType.contains("zip", ignoreCase = true) || 
-                isZipFile(file) -> DownloadType.ZIP
+                isZipFile(tempFile) -> DownloadType.ZIP
                 
                 contentType.contains("application/rive", ignoreCase = true) ||
-                (contentType.contains("octet-stream", ignoreCase = true) && isRiveFile(file)) -> DownloadType.RIVE
+                (contentType.contains("octet-stream", ignoreCase = true) && isRiveFile(tempFile)) -> {
+                    DownloadType.RIVE
+                }
                 
                 else -> throw Exception("不支持的文件类型: $contentType")
             }
@@ -778,7 +1001,11 @@ fun RivePlayer(file: java.io.File) {
 // 修改解压函数
 fun unzipMedia(context: Context): List<MediaFile> {
     println("Starting unzip process")
-    val zipFile = File(context.filesDir, "downloaded_file")
+    // 查找下载的 zip 文件
+    val files = context.filesDir.listFiles()
+    val zipFile = files?.firstOrNull { it.name.endsWith(".zip") }
+        ?: return emptyList()
+        
     val outputDir = File(context.filesDir, "unzipped_media").apply {
         deleteRecursively() // 清除旧文件
         mkdirs()

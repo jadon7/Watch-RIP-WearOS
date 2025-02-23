@@ -138,13 +138,16 @@ class RivePreviewActivity : ComponentActivity() {
         // 启用向上导航
         actionBar?.setDisplayHomeAsUpEnabled(true)
         
-        // 从 Intent 中获取 Rive 文件路径
+        // 从 Intent 中获取文件路径和临时文件标记
         val filePath = intent.getStringExtra("file_path") ?: return
+        val isTempFile = intent.getBooleanExtra("is_temp_file", false)
         
         setContent {
             WatchViewTheme {
                 // 添加对话框状态
                 val showDialog = remember { mutableStateOf(false) }
+                // 添加保存状态
+                var isSaved by remember { mutableStateOf(false) }
                 
                 if (showDialog.value) {
                     Dialog(
@@ -173,14 +176,15 @@ class RivePreviewActivity : ComponentActivity() {
                         ) {
                             Column(
                                 modifier = Modifier
-                                    .padding(horizontal = 28.dp),
+                                    .padding(horizontal = 48.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
                             ) {
+                                // 重新播放按钮
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(48.dp)
+                                        .height(40.dp)
                                         .clip(CircleShape)
                                         .background(Color(0xFF2196F3))
                                         .clickable {
@@ -203,14 +207,117 @@ class RivePreviewActivity : ComponentActivity() {
                                     )
                                 }
                                 
-                                Spacer(modifier = Modifier.height(16.dp))
+                                Spacer(modifier = Modifier.height(8.dp))
                                 
+                                // 保存文件按钮（仅当是临时文件且未保存时显示）
+                                if (isTempFile && !isSaved) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(40.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF4CAF50))
+                                            .clickable {
+                                                showDialog.value = false
+                                                // 保存文件
+                                                val tempFile = File(filePath)
+                                                val riveDir = File(this@RivePreviewActivity.filesDir, "saved_rive")
+                                                if (!riveDir.exists()) {
+                                                    riveDir.mkdirs()
+                                                }
+                                                
+                                                // 获取原始文件名
+                                                val originalName = tempFile.name
+                                                val baseName = originalName.substringBeforeLast(".")
+                                                val extension = originalName.substringAfterLast(".", "riv")
+                                                
+                                                // 生成不重复的文件名
+                                                var index = 1
+                                                var fileName = originalName
+                                                var savedFile = File(riveDir.absolutePath, fileName)
+                                                
+                                                while (savedFile.exists()) {
+                                                    fileName = "${baseName}_${index}.${extension}"
+                                                    savedFile = File(riveDir.absolutePath, fileName)
+                                                    index++
+                                                }
+                                                
+                                                // 复制文件
+                                                tempFile.copyTo(savedFile, overwrite = true)
+                                                
+                                                // 显示保存成功提示
+                                                val toast = android.widget.Toast.makeText(
+                                                    this@RivePreviewActivity,
+                                                    "已保存",
+                                                    android.widget.Toast.LENGTH_LONG
+                                                )
+                                                toast.setGravity(android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL, 0, 0)
+                                                
+                                                // 获取 Toast 的视图并修改样式
+                                                toast.view?.apply {
+                                                    // 移除图标
+                                                    if (this is android.widget.LinearLayout) {
+                                                        removeViewAt(0)
+                                                    }
+                                                    // 设置文字大小
+                                                    findViewById<android.widget.TextView>(android.R.id.message)?.apply {
+                                                        textSize = 10f
+                                                    }
+                                                }
+                                                
+                                                toast.show()
+                                                
+                                                // 1秒后取消显示
+                                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                                    toast.cancel()
+                                                }, 1000)
+                                                
+                                                // 更新保存状态
+                                                isSaved = true
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        BasicText(
+                                            text = "保存文件",
+                                            modifier = Modifier.padding(horizontal = 16.dp),
+                                            style = androidx.compose.ui.text.TextStyle(
+                                                color = Color.White,
+                                                fontSize = 14.sp
+                                            )
+                                        )
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                } else if (isTempFile && isSaved) {
+                                    // 显示已保存状态的按钮
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(40.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Gray),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        BasicText(
+                                            text = "已保存",
+                                            modifier = Modifier.padding(horizontal = 16.dp),
+                                            style = androidx.compose.ui.text.TextStyle(
+                                                color = Color.White,
+                                                fontSize = 14.sp
+                                            )
+                                        )
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                }
+                                
+                                // 退出预览按钮
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(48.dp)
+                                        .height(40.dp)
                                         .clip(CircleShape)
-                                        .background(Color(0xFF2196F3))
+                                        .background(Color(0xFFE53935))
                                         .clickable {
                                             showDialog.value = false
                                             finish() // 退出预览
@@ -240,7 +347,7 @@ class RivePreviewActivity : ComponentActivity() {
                                     val event = awaitPointerEvent()
                                     // 只检测双指点击
                                     if (event.changes.size == 2) {
-                                        showDialog.value = true
+                                                    showDialog.value = true
                                     }
                                 }
                             }
