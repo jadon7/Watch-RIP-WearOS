@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 
 // 文件类型枚举，用于区分下载的文件类型
 enum class DownloadType {
@@ -399,9 +400,9 @@ fun PageIndicator(
                     .clip(CircleShape)
                     .background(
                         if (currentPage == index)
-                            MaterialTheme.colors.primary
+                            Color.White
                         else
-                            MaterialTheme.colors.primary.copy(alpha = 0.5f)
+                            Color.White.copy(alpha = 0.5f)
                     )
             )
         }
@@ -434,32 +435,54 @@ fun SavedRiveFilesScreen() {
             ?: emptyList()
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colors.background)
-            .padding(horizontal = 28.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = "已保存",
-            color = MaterialTheme.colors.onBackground,
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 16.dp, bottom = 24.dp)
-        )
-        
         if (savedFiles.isEmpty()) {
-            Text(
-                text = "暂无保存的文件",
-                color = MaterialTheme.colors.onBackground.copy(alpha = 0.6f),
-                fontSize = 12.sp,
-                modifier = Modifier.padding(top = 16.dp)
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "已保存",
+                    color = MaterialTheme.colors.onBackground,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 24.dp)
+                )
+                Text(
+                    text = "暂无保存的文件",
+                    color = MaterialTheme.colors.onBackground.copy(alpha = 0.6f),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 16.dp)
+                )
+            }
         } else {
             LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // 添加标题作为第一个 item
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "已保存",
+                            color = MaterialTheme.colors.onBackground,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 16.dp, bottom = 24.dp)
+                        )
+                    }
+                }
+                
+                // 文件列表
                 items(
                     items = savedFiles,
                     key = { it.file.absolutePath }
@@ -527,7 +550,6 @@ fun SavedRiveFilesScreen() {
                         // 文件项按钮
                         Button(
                             onClick = {
-                                // 启动 Rive 预览 Activity
                                 val intent = android.content.Intent(context, RivePreviewActivity::class.java).apply {
                                     putExtra("file_path", savedFile.file.absolutePath)
                                 }
@@ -544,10 +566,18 @@ fun SavedRiveFilesScreen() {
                             Text(
                                 text = savedFile.name,
                                 color = Color(0xFF2196F3),
-                                fontSize = 12.sp
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 8.dp)
                             )
                         }
                     }
+                }
+                
+                // 添加底部空白区域
+                item {
+                    Spacer(modifier = Modifier.height(30.dp))
                 }
             }
         }
@@ -663,14 +693,14 @@ fun DownloadScreen(
         }
     }
 
-    Column(
+    Box(
         modifier = Modifier.fillMaxSize()
     ) {
         // 使用 HorizontalPager 进行水平分页
         HorizontalPager(
             count = 2,
             state = pagerState,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.fillMaxSize()
         ) { page ->
             when (page) {
                 0 -> {
@@ -684,7 +714,7 @@ fun DownloadScreen(
                         ) {
                             Text(
                                 text = "请连接 Wi-Fi 后继续",
-                                color = MaterialTheme.colors.primary,
+                                color = Color.White,
                                 fontSize = 14.sp,
                             )
                         }
@@ -724,6 +754,9 @@ fun DownloadScreen(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
+                            var focusState by remember { mutableStateOf(false) }
+                            val focusManager = LocalFocusManager.current
+                            
                             OutlinedTextField(
                                 value = ipAddress,
                                 onValueChange = { newValue -> 
@@ -751,7 +784,10 @@ fun DownloadScreen(
                                 ),
                                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(
                                     onDone = {
-                                        // 可以在这里添加完成输入后的操作
+                                        focusManager.clearFocus()
+                                        val url = "http://$ipAddress:8080"
+                                        downloadStatus = "下载中..."
+                                        handleDownload(url)
                                     }
                                 ),
                                 colors = TextFieldDefaults.outlinedTextFieldColors(
@@ -818,14 +854,19 @@ fun DownloadScreen(
             }
         }
         
-        // 添加底部指示器
-        PageIndicator(
-            pageCount = 2,
-            currentPage = pagerState.currentPage,
+        // 添加悬浮的底部指示器
+        Box(
             modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .padding(bottom = 16.dp)
-        )
+                .fillMaxSize()
+                .padding(bottom = 16.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            PageIndicator(
+                pageCount = 2,
+                currentPage = pagerState.currentPage,
+                modifier = Modifier
+            )
+        }
     }
 }
 

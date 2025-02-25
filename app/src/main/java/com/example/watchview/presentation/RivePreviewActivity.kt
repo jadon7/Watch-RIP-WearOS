@@ -151,7 +151,10 @@ class RivePreviewActivity : ComponentActivity() {
                 
                 if (showDialog.value) {
                     Dialog(
-                        onDismissRequest = { showDialog.value = false },
+                        onDismissRequest = { 
+                            Log.d("DialogDebug", "Dialog dismissed by outside click")
+                            showDialog.value = false 
+                        },
                         properties = DialogProperties(
                             dismissOnBackPress = true,
                             dismissOnClickOutside = true,
@@ -163,20 +166,16 @@ class RivePreviewActivity : ComponentActivity() {
                             modifier = Modifier
                                 .fillMaxSize()
                                 .background(Color.Black.copy(alpha = 0.9f))
-                                .clickable { showDialog.value = false }
-                                .pointerInput(Unit) {
-                                    awaitPointerEventScope {
-                                        while (true) {
-                                            val event = awaitPointerEvent()
-                                            event.changes.forEach { it.consume() }
-                                        }
-                                    }
+                                .clickable { 
+                                    Log.d("DialogDebug", "Dialog background clicked")
+                                    showDialog.value = false 
                                 },
                             contentAlignment = Alignment.Center
                         ) {
                             Column(
                                 modifier = Modifier
-                                    .padding(horizontal = 48.dp),
+                                    .padding(horizontal = 48.dp)
+                                    .clickable(enabled = false) {}, // 防止点击传递到背景
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
                             ) {
@@ -188,11 +187,17 @@ class RivePreviewActivity : ComponentActivity() {
                                         .clip(CircleShape)
                                         .background(Color(0xFF2196F3))
                                         .clickable {
-                                            showDialog.value = false
-                                            // 重新播放当前 Rive 文件
-                                            riveView?.let {
-                                                it.reset()
-                                                it.play()
+                                            Log.d("DialogDebug", "Replay button clicked")
+                                            try {
+                                                showDialog.value = false
+                                                // 重新播放当前 Rive 文件
+                                                riveView?.let {
+                                                    it.reset()
+                                                    it.play()
+                                                }
+                                                Log.d("DialogDebug", "Replay successful")
+                                            } catch (e: Exception) {
+                                                Log.e("DialogDebug", "Error during replay", e)
                                             }
                                         },
                                     contentAlignment = Alignment.Center
@@ -218,62 +223,68 @@ class RivePreviewActivity : ComponentActivity() {
                                             .clip(CircleShape)
                                             .background(Color(0xFF4CAF50))
                                             .clickable {
-                                                showDialog.value = false
-                                                // 保存文件
-                                                val tempFile = File(filePath)
-                                                val riveDir = File(this@RivePreviewActivity.filesDir, "saved_rive")
-                                                if (!riveDir.exists()) {
-                                                    riveDir.mkdirs()
-                                                }
-                                                
-                                                // 获取原始文件名
-                                                val originalName = tempFile.name
-                                                val baseName = originalName.substringBeforeLast(".")
-                                                val extension = originalName.substringAfterLast(".", "riv")
-                                                
-                                                // 生成不重复的文件名
-                                                var index = 1
-                                                var fileName = originalName
-                                                var savedFile = File(riveDir.absolutePath, fileName)
-                                                
-                                                while (savedFile.exists()) {
-                                                    fileName = "${baseName}_${index}.${extension}"
-                                                    savedFile = File(riveDir.absolutePath, fileName)
-                                                    index++
-                                                }
-                                                
-                                                // 复制文件
-                                                tempFile.copyTo(savedFile, overwrite = true)
-                                                
-                                                // 显示保存成功提示
-                                                val toast = android.widget.Toast.makeText(
-                                                    this@RivePreviewActivity,
-                                                    "已保存",
-                                                    android.widget.Toast.LENGTH_LONG
-                                                )
-                                                toast.setGravity(android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL, 0, 0)
-                                                
-                                                // 获取 Toast 的视图并修改样式
-                                                toast.view?.apply {
-                                                    // 移除图标
-                                                    if (this is android.widget.LinearLayout) {
-                                                        removeViewAt(0)
+                                                Log.d("DialogDebug", "Save button clicked")
+                                                try {
+                                                    showDialog.value = false
+                                                    // 保存文件
+                                                    val tempFile = File(filePath)
+                                                    val riveDir = File(this@RivePreviewActivity.filesDir, "saved_rive")
+                                                    if (!riveDir.exists()) {
+                                                        riveDir.mkdirs()
                                                     }
-                                                    // 设置文字大小
-                                                    findViewById<android.widget.TextView>(android.R.id.message)?.apply {
-                                                        textSize = 10f
+                                                    
+                                                    // 获取原始文件名
+                                                    val originalName = tempFile.name
+                                                    val baseName = originalName.substringBeforeLast(".")
+                                                    val extension = originalName.substringAfterLast(".", "riv")
+                                                    
+                                                    // 生成不重复的文件名
+                                                    var index = 1
+                                                    var fileName = originalName
+                                                    var savedFile = File(riveDir.absolutePath, fileName)
+                                                    
+                                                    while (savedFile.exists()) {
+                                                        fileName = "${baseName}_${index}.${extension}"
+                                                        savedFile = File(riveDir.absolutePath, fileName)
+                                                        index++
                                                     }
+                                                    
+                                                    // 复制文件
+                                                    tempFile.copyTo(savedFile, overwrite = true)
+                                                    Log.d("DialogDebug", "File saved successfully: ${savedFile.absolutePath}")
+                                                    
+                                                    // 显示保存成功提示
+                                                    val toast = android.widget.Toast.makeText(
+                                                        this@RivePreviewActivity,
+                                                        "已保存",
+                                                        android.widget.Toast.LENGTH_LONG
+                                                    )
+                                                    toast.setGravity(android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL, 0, 0)
+                                                    
+                                                    // 获取 Toast 的视图并修改样式
+                                                    toast.view?.apply {
+                                                        // 移除图标
+                                                        if (this is android.widget.LinearLayout) {
+                                                            removeViewAt(0)
+                                                        }
+                                                        // 设置文字大小
+                                                        findViewById<android.widget.TextView>(android.R.id.message)?.apply {
+                                                            textSize = 10f
+                                                        }
+                                                    }
+                                                    
+                                                    toast.show()
+                                                    
+                                                    // 1秒后取消显示
+                                                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                                        toast.cancel()
+                                                    }, 1000)
+                                                    
+                                                    // 更新保存状态
+                                                    isSaved = true
+                                                } catch (e: Exception) {
+                                                    Log.e("DialogDebug", "Error during save", e)
                                                 }
-                                                
-                                                toast.show()
-                                                
-                                                // 1秒后取消显示
-                                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                                    toast.cancel()
-                                                }, 1000)
-                                                
-                                                // 更新保存状态
-                                                isSaved = true
                                             },
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -319,8 +330,14 @@ class RivePreviewActivity : ComponentActivity() {
                                         .clip(CircleShape)
                                         .background(Color(0xFFE53935))
                                         .clickable {
-                                            showDialog.value = false
-                                            finish() // 退出预览
+                                            Log.d("DialogDebug", "Exit button clicked")
+                                            try {
+                                                showDialog.value = false
+                                                finish() // 退出预览
+                                                Log.d("DialogDebug", "Activity finished successfully")
+                                            } catch (e: Exception) {
+                                                Log.e("DialogDebug", "Error during exit", e)
+                                            }
                                         },
                                     contentAlignment = Alignment.Center
                                 ) {
