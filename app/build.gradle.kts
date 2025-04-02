@@ -13,7 +13,7 @@ android {
         minSdk = 30                             // 最低支持的 Android 版本 (WearOS)
         targetSdk = 34                          // 目标 Android 版本
         versionCode = 1                         // 应用版本号
-        versionName = "1.0"                     // 应用版本名称
+        versionName = "1.0.4"                     // 应用版本名称
         vectorDrawables {
             useSupportLibrary = true            // 启用矢量图支持
         }
@@ -52,6 +52,7 @@ android {
 dependencies {
     // WearOS 相关依赖
     implementation(libs.play.services.wearable)  // Google Play 服务 WearOS 支持库
+    implementation("androidx.wear:wear:1.3.0")   // WearOS 基础支持库
     
     // Compose 相关依赖
     implementation(platform(libs.compose.bom))   // Compose BOM (物料清单)
@@ -75,4 +76,5 @@ dependencies {
     // 第三方库依赖
     implementation("com.google.accompanist:accompanist-pager:0.28.0")  // 分页组件
     implementation("app.rive:rive-android:9.13.10")                    // Rive 动画支持
+    implementation("androidx.startup:startup-runtime:1.1.1")           // App Startup
 }
