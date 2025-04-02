@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Dp
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.TimeText
 import androidx.wear.tooling.preview.devices.WearDevices
@@ -63,19 +64,45 @@ import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import com.example.watchview.presentation.model.MediaFile
+import com.example.watchview.presentation.model.MediaType
+import java.io.FileInputStream
+import android.util.Log
+import android.widget.Toast
+import android.content.Intent
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.PlayArrow
+import java.util.zip.ZipInputStream
+import androidx.compose.ui.text.style.TextOverflow
+import kotlin.math.abs
+import com.google.accompanist.pager.ExperimentalPagerApi
+import com.google.accompanist.pager.rememberPagerState
+import com.google.accompanist.pager.VerticalPager
+import androidx.compose.material.BottomSheetScaffold
+import androidx.compose.material.BottomSheetState
+import androidx.compose.material.BottomSheetValue
+import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.material.rememberBottomSheetScaffoldState
+import androidx.compose.material.rememberBottomSheetState
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.runtime.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.animateFloatAsState
 
 // 文件类型枚举，用于区分下载的文件类型
 enum class DownloadType {
-    VIDEO,      // 视频文件
     ZIP,        // 压缩包文件
     RIVE,       // Rive 动画文件
-    OTHER       // 其他不支持的文件类型
-}
-
-// 媒体类型枚举，用于区分解压后的文件类型
-enum class MediaType {
-    IMAGE,
-    VIDEO
 }
 
 // 在文件开头的枚举类型后面添加
@@ -100,6 +127,19 @@ sealed class PreviewType {
 data class SavedRiveFile(
     val name: String,
     val file: File,
+    val lastModified: Long
+)
+
+// 在 PreviewType 之后添加新的枚举和数据类
+enum class SavedFileType {
+    RIVE,
+    MEDIA_LIST // 代表 ZIP 文件
+}
+
+data class SavedFileItem(
+    val name: String,
+    val file: File,
+    val type: SavedFileType,
     val lastModified: Long
 )
 
@@ -386,198 +426,188 @@ fun NetworkScanScreen(
 fun PageIndicator(
     pageCount: Int,
     currentPage: Int,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    indicatorSize: Dp = 8.dp,
+    spacing: Dp = 6.dp,
+    activeColor: Color = MaterialTheme.colors.primary,
+    inactiveColor: Color = MaterialTheme.colors.onBackground.copy(alpha = 0.3f)
 ) {
-    Row(
+    Column(
         modifier = modifier,
-        horizontalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.spacedBy(spacing),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         repeat(pageCount) { index ->
+            val color = if (index == currentPage) activeColor else inactiveColor
             Box(
                 modifier = Modifier
-                    .padding(4.dp)
-                    .size(if (currentPage == index) 6.dp else 4.dp)
+                    .size(indicatorSize)
                     .clip(CircleShape)
-                    .background(
-                        if (currentPage == index)
-                            Color.White
-                        else
-                            Color.White.copy(alpha = 0.5f)
-                    )
+                    .background(color)
             )
         }
     }
 }
 
 @Composable
-fun SavedRiveFilesScreen() {
-    var savedFiles by remember { mutableStateOf<List<SavedRiveFile>>(emptyList()) }
-    val context = LocalContext.current
+fun SavedFilesScreen(context: Context) {
+    var savedFiles by remember { mutableStateOf<List<SavedFileItem>>(emptyList()) }
     val coroutineScope = rememberCoroutineScope()
     
-    // 加载保存的文件
     LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
         val filesDir = File(context.filesDir, "saved_rive")
         if (!filesDir.exists()) {
             filesDir.mkdirs()
         }
-        
-        savedFiles = filesDir.listFiles()
-            ?.filter { it.name.endsWith(".riv") }
-            ?.map { file ->
-                SavedRiveFile(
+            val loadedFiles = filesDir.listFiles()
+                ?.filter { it.name.endsWith(".riv") || it.name.endsWith(".zip") }
+                ?.mapNotNull { file ->
+                    val type = when {
+                        file.name.endsWith(".riv") -> SavedFileType.RIVE
+                        file.name.endsWith(".zip") -> SavedFileType.MEDIA_LIST
+                        else -> null 
+                    }
+                    type?.let {
+                        SavedFileItem(
                     name = file.name,
                     file = file,
+                            type = it,
                     lastModified = file.lastModified()
                 )
+                    }
             }
             ?.sortedByDescending { it.lastModified }
             ?: emptyList()
+            withContext(Dispatchers.Main) {
+                 savedFiles = loadedFiles
+            }
+        }
     }
 
-    Box(
+            LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colors.background)
-    ) {
-        if (savedFiles.isEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 28.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            .background(MaterialTheme.colors.background),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 80.dp)
             ) {
-                Text(
-                    text = "已保存",
-                    color = MaterialTheme.colors.onBackground,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 16.dp, bottom = 24.dp)
-                )
-                Text(
-                    text = "暂无保存的文件",
-                    color = MaterialTheme.colors.onBackground.copy(alpha = 0.6f),
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 16.dp)
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 28.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // 添加标题作为第一个 item
-                item {
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "已保存",
-                            color = MaterialTheme.colors.onBackground,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 16.dp, bottom = 24.dp)
-                        )
-                    }
-                }
-                
-                // 文件列表
-                items(
-                    items = savedFiles,
-                    key = { it.file.absolutePath }
-                ) { savedFile ->
+                items(savedFiles, key = { it.file.absolutePath }) { savedFile ->
                     var offsetX by remember { mutableStateOf(0f) }
-                    var isDeleting by remember { mutableStateOf(false) }
-                    
-                    // 添加动画状态
-                    val offsetXAnimated by animateFloatAsState(
-                        targetValue = if (isDeleting) -1000f else offsetX,
-                        animationSpec = if (isDeleting) 
-                            tween(durationMillis = 300, easing = FastOutSlowInEasing)
-                        else 
-                            spring(
-                                dampingRatio = Spring.DampingRatioMediumBouncy,
-                                stiffness = Spring.StiffnessLow
-                            )
-                    )
+            val draggableState = rememberDraggableState { delta ->
+                offsetX = (offsetX + delta).coerceAtMost(0f) 
+            }
                     
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .offset { IntOffset(offsetXAnimated.roundToInt(), 0) }
-                            .pointerInput(Unit) {
-                                detectHorizontalDragGestures(
-                                    onDragEnd = {
-                                        if (offsetX < -200) {  // 如果滑动超过阈值
-                                            isDeleting = true
-                                            // 等待动画完成后再删除文件
+                    .height(48.dp) 
+                    .draggable(
+                        state = draggableState,
+                        orientation = Orientation.Horizontal,
+                        onDragStopped = {
+                            val deleteThreshold = -300f
+                            if (offsetX < deleteThreshold) {
                                             coroutineScope.launch {
-                                                delay(300) // 等待动画完成
+                                    try {
+                                        val deleted = withContext(Dispatchers.IO) {
                                                 savedFile.file.delete()
-                                                savedFiles = savedFiles.filter { it.file != savedFile.file }
+                                        }
+                                        if (deleted) {
+                                            withContext(Dispatchers.Main) {
+                                                savedFiles = savedFiles.filterNot { it.file.absolutePath == savedFile.file.absolutePath }
+                                                Toast.makeText(context, "已删除", Toast.LENGTH_SHORT).show()
                                             }
                                         } else {
-                                            // 回弹
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(context, "删除失败", Toast.LENGTH_SHORT).show()
                                             offsetX = 0f
                                         }
-                                    },
-                                    onDragCancel = {
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e("DirectDeleteError", "Failed to delete file: ${savedFile.name}", e)
+                                        withContext(Dispatchers.Main) {
+                                            Toast.makeText(context, "删除出错", Toast.LENGTH_SHORT).show()
                                         offsetX = 0f
                                     }
-                                ) { change, dragAmount ->
-                                    change.consumeAllChanges()
-                                    if (!isDeleting) {  // 只在非删除状态下更新偏移
-                                        val newOffset = (offsetX + dragAmount).coerceAtMost(0f)
-                                        offsetX = newOffset
                                     }
                                 }
+                            } else {
+                                offsetX = 0f
                             }
-                            .animateContentSize()
-                    ) {
-                        // 删除按钮背景
-                        if (offsetX < 0) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Red.copy(alpha = 0.3f))
-                                    .align(Alignment.CenterEnd)
-                            )
                         }
-                        
+                    )
+                    .offset { IntOffset(offsetX.roundToInt(), 0) }
+            ) {
                         // 文件项按钮
                         Button(
                             onClick = {
-                                val intent = android.content.Intent(context, RivePreviewActivity::class.java).apply {
+                        when (savedFile.type) {
+                            SavedFileType.RIVE -> {
+                                val intent = Intent(context, RivePreviewActivity::class.java).apply {
                                     putExtra("file_path", savedFile.file.absolutePath)
+                                    putExtra("is_temp_file", false)
                                 }
                                 context.startActivity(intent)
+                            }
+                            SavedFileType.MEDIA_LIST -> {
+                                coroutineScope.launch {
+                                    try {
+                                        val mediaFiles = withContext(Dispatchers.IO) {
+                                            unzipSavedZipForPreview(context, savedFile.file)
+                                        }
+                                        withContext(Dispatchers.Main) {
+                                             if (mediaFiles.isNotEmpty()) {
+                                                 val intent = Intent(context, MediaPreviewActivity::class.java).apply {
+                                                     putStringArrayListExtra("media_files", ArrayList(mediaFiles.map { it.file.absolutePath }))
+                                                     putStringArrayListExtra("media_types", ArrayList(mediaFiles.map { it.type.name }))
+                                                     putExtra("zip_file_path", savedFile.file.absolutePath)
+                                                     putExtra("is_saved_list", true)
+                                                 }
+                                                 context.startActivity(intent)
+                                             } else {
+                                                 Toast.makeText(context, "无法预览：压缩包为空或解压失败", Toast.LENGTH_SHORT).show()
+                                             }
+                                        }
+                                    } catch (e: Exception) {
+                                         Log.e("UnzipPreviewError", "Failed to unzip for preview: ${savedFile.name}", e)
+                                         withContext(Dispatchers.Main) {
+                                             Toast.makeText(context, "预览失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                         }
+                                    }
+                                }
+                            }
+                        }
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(48.dp),
                             colors = ButtonDefaults.buttonColors(
-                                backgroundColor = Color(0xFF2196F3).copy(alpha = 0.3f)
-                            ),
-                            shape = CircleShape
-                        ) {
+                        backgroundColor = MaterialTheme.colors.surface
+                    ),
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(horizontal = 16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                         Icon(
+                             imageVector = if (savedFile.type == SavedFileType.RIVE) Icons.Default.PlayArrow else Icons.Default.List,
+                             contentDescription = if (savedFile.type == SavedFileType.RIVE) "Rive 文件" else "媒体列表",
+                             tint = MaterialTheme.colors.primary
+                         )
+                         Spacer(Modifier.width(8.dp))
                             Text(
                                 text = savedFile.name,
-                                color = Color(0xFF2196F3),
+                             color = MaterialTheme.colors.onSurface,
                                 fontSize = 12.sp,
                                 maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(horizontal = 8.dp)
+                             overflow = TextOverflow.Ellipsis,
+                             modifier = Modifier.weight(1f)
                             )
-                        }
                     }
-                }
-                
-                // 添加底部空白区域
-                item {
-                    Spacer(modifier = Modifier.height(30.dp))
                 }
             }
         }
@@ -585,7 +615,7 @@ fun SavedRiveFilesScreen() {
 }
 
 // 修改 DownloadScreen 函数
-@OptIn(ExperimentalPagerApi::class)
+@OptIn(ExperimentalMaterialApi::class)
 @Composable
 fun DownloadScreen(
     isWifiConnected: Boolean,
@@ -598,11 +628,12 @@ fun DownloadScreen(
     var ipAddress by remember { mutableStateOf(initialIpAddress) }
     var downloadStatus by remember { mutableStateOf("") }
     val coroutineScope = rememberCoroutineScope()
-    
-    // 添加水平分页状态
-    val pagerState = rememberPagerState()
-    
     val context = LocalContext.current
+    
+    // 添加 BottomSheet 相关状态
+    val bottomSheetState = rememberBottomSheetState(initialValue = BottomSheetValue.Collapsed)
+    val scaffoldState = rememberBottomSheetScaffoldState(bottomSheetState = bottomSheetState)
+    val sheetPeekHeight = 32.dp // 改为更小的高度，像一个指示条
 
     // 添加下载进度状态
     var downloadProgress by remember { mutableStateOf(0f) }
@@ -622,60 +653,81 @@ fun DownloadScreen(
     // 修改下载处理逻辑
     val handleDownload = { url: String ->
         coroutineScope.launch {
+            var downloadedFilePath: String? = null 
+            var downloadedFileType: DownloadType? = null 
+
             try {
                 isDownloading = true
                 downloadStatus = "开始下载..."
                 downloadProgress = 0f
                 
-                // 清理旧文件
+                // 清理旧的临时下载文件 (保留 saved_rive 目录)
                 context.filesDir.listFiles()?.forEach { file ->
-                    if (file.name != "saved_rive" && (file.name.endsWith(".riv") || file.name.endsWith(".zip"))) {
+                    if (file.isDirectory && file.name == "saved_rive") {
+                        // 保留 saved_rive 目录
+                    } else if (file.isDirectory && file.name.startsWith("unzipped_")) {
+                        // 清理旧的解压目录
+                        file.deleteRecursively()
+                    } else if (file.isFile && (file.name.endsWith(".riv") || file.name.endsWith(".zip"))) {
+                         // 删除根目录下的临时 riv/zip 文件
                         file.delete()
                     }
                 }
                 
-                val downloadType = downloadFile(context, url) { progress ->
+                val downloadResult = downloadFile(context, url) { progress ->
                     downloadProgress = progress
                     downloadStatus = "下载中... ${(progress * 100).toInt()}%"
                 }
+                downloadedFilePath = downloadResult.filePath
+                downloadedFileType = downloadResult.type
                 
-                when (downloadType) {
+                when (downloadedFileType) {
                     DownloadType.ZIP -> {
+                        if (downloadedFilePath != null) {
                         downloadStatus = "解压文件中..."
-                        val mediaFiles = unzipMedia(context)
+                            val tempZipFile = File(downloadedFilePath)
+                            val mediaFiles = unzipMedia(context, tempZipFile) 
                         if (mediaFiles.isEmpty()) {
                             downloadStatus = "解压失败或压缩包中无可用媒体文件"
+                                tempZipFile.delete() 
                         } else {
                             downloadStatus = ""
-                            // 启动媒体预览 Activity，移除过渡动画
-                            val intent = android.content.Intent(context, MediaPreviewActivity::class.java).apply {
+                                val intent = Intent(context, MediaPreviewActivity::class.java).apply {
                                 putStringArrayListExtra("media_files", ArrayList(mediaFiles.map { it.file.absolutePath }))
                                 putStringArrayListExtra("media_types", ArrayList(mediaFiles.map { it.type.name }))
+                                    putExtra("zip_file_path", tempZipFile.absolutePath)
+                                    putExtra("is_saved_list", false)
                             }
                             context.startActivity(intent)
+                            }
+                        } else {
+                             downloadStatus = "下载 ZIP 文件失败，未找到文件"
                         }
                     }
                     DownloadType.RIVE -> {
-                        // 获取下载的文件
-                        val files = context.filesDir.listFiles()
-                        val tempFile = files?.firstOrNull { it.name != "saved_rive" && it.name.endsWith(".riv") }
-                        if (tempFile != null) {
+                        if (downloadedFilePath != null) {
+                            val tempFile = File(downloadedFilePath)
                             downloadStatus = ""
-                            // 启动 Rive 预览 Activity，使用临时文件路径
-                            val intent = android.content.Intent(context, RivePreviewActivity::class.java).apply {
+                            val intent = Intent(context, RivePreviewActivity::class.java).apply {
                                 putExtra("file_path", tempFile.absolutePath)
-                                putExtra("is_temp_file", true)  // 添加标记表明这是临时文件
+                                putExtra("is_temp_file", true)  
                             }
                             context.startActivity(intent)
                         } else {
-                            downloadStatus = "找不到下载的文件"
+                             downloadStatus = "下载 Rive 文件失败，未找到文件"
                         }
                     }
-                    else -> downloadStatus = "不支持的文件类型"
                 }
             } catch (e: Exception) {
-                downloadStatus = "下载失败: ${e.message}"
-                e.printStackTrace()
+                Log.e("DownloadHandleError", "Error during download/processing", e)
+                val errorMsg = when (e) {
+                    is java.net.ConnectException -> "无法连接到服务器"
+                    is java.net.SocketTimeoutException -> "连接超时"
+                    is java.io.IOException -> "网络错误: ${e.message}" 
+                    else -> "处理失败: ${e.message}" 
+                }
+                downloadStatus = errorMsg 
+                downloadedFilePath?.let { File(it).delete() }
             } finally {
                 isDownloading = false
             }
@@ -693,32 +745,88 @@ fun DownloadScreen(
         }
     }
 
-    Box(
-        modifier = Modifier.fillMaxSize()
-    ) {
-        // 使用 HorizontalPager 进行水平分页
-        HorizontalPager(
-            count = 2,
-            state = pagerState,
-            modifier = Modifier.fillMaxSize()
-        ) { page ->
-            when (page) {
-                0 -> {
-                    // 第一页：扫描和输入页面
-                    if (!isWifiConnected) {
+    // 使用 BottomSheetScaffold 替换 Box 和 VerticalPager
+    BottomSheetScaffold(
+        scaffoldState = scaffoldState,
+        sheetContent = {
+            Column {
+                // 1. 自定义的拖动指示条 (Handle)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(sheetPeekHeight)
+                        .background(Color.Black)
+                        .clickable( 
+                             interactionSource = remember { MutableInteractionSource() },
+                             indication = null,
+                             onClick = { 
+                                 coroutineScope.launch {
+                                      if (bottomSheetState.isCollapsed) {
+                                           bottomSheetState.expand()
+                                      } else {
+                                           bottomSheetState.collapse()
+                                      }
+                                 }
+                             }
+                         ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // 指示条中间的小横线
                         Box(
                             modifier = Modifier
+                            .width(40.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp)) 
+                            .background(Color.Gray.copy(alpha = 0.8f))
+                    )
+                }
+                
+                // 2. 放置实际的 Sheet 内容
+                SavedFilesScreen(context = context)
+            }
+        },
+        sheetPeekHeight = sheetPeekHeight,
+        sheetShape = MaterialTheme.shapes.large, 
+        sheetBackgroundColor = MaterialTheme.colors.surface
+    ) { paddingValues -> 
+        // --- 修改为基于状态的动画 --- 
+        // val progress = bottomSheetState.progress.fraction // Remove this line
+        // val scale = (1.0f - (progress * 0.15f)).coerceIn(0.85f, 1.0f) // Remove this line
+        // val alpha = (1.0f - (progress * 0.5f)).coerceIn(0.5f, 1.0f)   // Remove this line
+
+        // 根据目标状态计算目标值
+        val targetScale = if (bottomSheetState.targetValue == BottomSheetValue.Expanded) 0.85f else 1.0f
+        val targetAlpha = if (bottomSheetState.targetValue == BottomSheetValue.Expanded) 0.5f else 1.0f
+        
+        // 使用 animateFloatAsState 创建动画状态
+        val scale by animateFloatAsState(targetValue = targetScale)
+        val alpha by animateFloatAsState(targetValue = targetAlpha)
+        // --- 结束修改 ---
+        
+        // 主内容区域 Box
+        Box(
+             modifier = Modifier
+                 .padding(paddingValues) 
                                 .fillMaxSize()
-                                .background(MaterialTheme.colors.background),
+                 .background(MaterialTheme.colors.background) 
+                 // --- 应用动画状态 --- 
+                 .graphicsLayer {
+                     scaleX = scale
+                     scaleY = scale
+                     this.alpha = alpha
+                 }
+                 // --- 结束应用 --- 
+         ) {
+             // 主内容的逻辑不变
+            if (!isWifiConnected) {
+                 Box( 
+                     modifier = Modifier.fillMaxSize(), // 背景由外部 Box 处理
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "请连接 Wi-Fi 后继续",
-                                color = Color.White,
-                                fontSize = 14.sp,
-                            )
+                     Text("请连接 Wi-Fi 后继续", color = Color.White, fontSize = 14.sp)
                         }
                     } else if (showScanScreen) {
+                // NetworkScanScreen 内部可能也需要检查背景设置
                         NetworkScanScreen(
                             servers = servers,
                             isScanning = isScanning,
@@ -729,6 +837,10 @@ fun DownloadScreen(
                                     ipAddress = server.ip
                                     showScanScreen = false
                                     handleDownload("http://$ipAddress:8080")
+                                }
+                        // 点击扫描结果或手动输入后，可以考虑折叠底部面板 (如果它是展开的)
+                        coroutineScope.launch {
+                            bottomSheetState.collapse()
                                 }
                             },
                             onCancelScan = {
@@ -742,14 +854,17 @@ fun DownloadScreen(
                                         isScanning = false
                                     }
                                 }
+                        coroutineScope.launch {
+                            bottomSheetState.collapse() // 取消扫描或重扫也折叠
+                                }
                             }
                         )
                     } else {
-                        // 手动输入页面
+                // 手动输入页面 Column
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(MaterialTheme.colors.background)
+                        // .background(MaterialTheme.colors.background) // 背景由外部 Box 处理
                                 .padding(28.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
@@ -805,6 +920,7 @@ fun DownloadScreen(
                                     val url = "http://$ipAddress:8080"
                                     downloadStatus = "下载中..."
                                     handleDownload(url)
+                            coroutineScope.launch { bottomSheetState.collapse() } // 开始下载后折叠
                                 },
                                 enabled = !isDownloading,
                                 modifier = Modifier
@@ -849,23 +965,6 @@ fun DownloadScreen(
                             }
                         }
                     }
-                }
-                1 -> SavedRiveFilesScreen()  // 第二页：已保存的 Rive 文件页面
-            }
-        }
-        
-        // 添加悬浮的底部指示器
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(bottom = 16.dp),
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            PageIndicator(
-                pageCount = 2,
-                currentPage = pagerState.currentPage,
-                modifier = Modifier
-            )
         }
     }
 }
@@ -881,14 +980,17 @@ private fun isRiveFile(file: File): Boolean {
     }
 }
 
-// 修改文件类型判断逻辑
+// 将 DownloadResult 定义移到 downloadFile 函数之前
+data class DownloadResult(val filePath: String?, val type: DownloadType)
+
 suspend fun downloadFile(
     context: Context, 
     urlString: String,
     onProgress: (Float) -> Unit
-): DownloadType {
+): DownloadResult { 
     return withContext(Dispatchers.IO) {
         var connection: HttpURLConnection? = null
+        var tempFile: File? = null 
         try {
             println("Downloading from: $urlString")
             
@@ -896,8 +998,8 @@ suspend fun downloadFile(
             connection = url.openConnection() as HttpURLConnection
             connection.apply {
                 requestMethod = "GET"
-                connectTimeout = 15000  // 增加连接超时时间到15秒
-                readTimeout = 45000     // 增加读取超时时间到45秒
+                connectTimeout = 5000  // 增加连接超时时间到15秒
+                readTimeout = 5000     // 增加读取超时时间到45秒
                 
                 // 优化连接配置
                 setRequestProperty("Accept", "*/*")
@@ -917,74 +1019,115 @@ suspend fun downloadFile(
             println("Response code: $responseCode")
             
             if (responseCode != HttpURLConnection.HTTP_OK) {
-                throw Exception("列表返回错误代码: $responseCode")
+                 // 增加重试机制或更详细错误信息
+                 var errorDetails = "列表返回错误代码: $responseCode"
+                 try {
+                     connection.errorStream?.bufferedReader()?.use { errorDetails += "\\n${it.readText()}" }
+                 } catch (_: Exception) {}
+                 throw IOException(errorDetails)
             }
             
-            val contentType = connection.contentType ?: "application/zip"
-            val fileSize = connection.contentLength.toLong()
+            val contentType = connection.contentType ?: "application/octet-stream"
+            val fileSize = connection.contentLengthLong
             println("Content type: $contentType, File size: $fileSize bytes")
             
-            // 获取原始文件名
+            // 获取原始文件名，处理 Content-Disposition
             var originalFileName = "downloaded_file"
             val contentDisposition = connection.getHeaderField("Content-Disposition")
             if (contentDisposition != null) {
-                val pattern = "filename[^;=\\n]*=((['\"]).*?\\2|[^;\\n]*)".toRegex()
-                val matchResult = pattern.find(contentDisposition)
-                if (matchResult != null) {
-                    originalFileName = matchResult.groupValues[1].trim('"', '\'')
+                val parts = contentDisposition.split("filename=")
+                if (parts.size > 1) {
+                    originalFileName = parts[1].trim(' ', '"')
+                     // 简单的 URL 解码处理（可能不完全充分）
+                     try {
+                         originalFileName = URLDecoder.decode(originalFileName, "UTF-8")
+                     } catch (e: UnsupportedEncodingException) {
+                         println("Warning: Could not URL decode filename: $originalFileName")
+                     } catch (e: IllegalArgumentException) {
+                          println("Warning: Invalid encoding in filename: $originalFileName")
+                     }
                 }
+            } else {
+                 // 尝试从 URL 中提取文件名
+                 try {
+                      val path = URL(urlString).path
+                      if (path.isNotEmpty() && path != "/") {
+                           originalFileName = File(path).name
+                      }
+                 } catch (e: MalformedURLException) {
+                      println("Warning: Could not parse URL for filename: $urlString")
+                 }
             }
-            
-            // 创建输出文件
-            val tempFile = File(context.filesDir, originalFileName)
+
+            // 确保文件名有扩展名，并确定临时文件路径
+            val fileExtension = originalFileName.substringAfterLast('.', "")
+            val baseName = originalFileName.substringBeforeLast('.', originalFileName)
+            val finalFileName = if (fileExtension.isNotEmpty()) originalFileName else "$baseName.tmp"
+            tempFile = File(context.filesDir, finalFileName)
             
             // 使用更大的缓冲区(1MB)进行读写
-            val buffer = ByteArray(1024 * 1024)
-            var lastProgressUpdate = 0L
+            val buffer = ByteArray(8192) // 增大缓冲区
+            var bytesRead: Int
             var totalBytesRead = 0L
             
-            connection.inputStream.buffered().use { input ->
-                FileOutputStream(tempFile).buffered().use { output ->
-                    while (true) {
-                        val bytesRead = input.read(buffer)
-                        if (bytesRead == -1) break
-                        
+            connection.inputStream.use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
                         output.write(buffer, 0, bytesRead)
                         totalBytesRead += bytesRead
-                        
-                        // 降低进度回调频率，每读取1MB才更新一次
-                        if (totalBytesRead - lastProgressUpdate >= 1024 * 1024) {
-                            val progress = if (fileSize > 0) {
-                                totalBytesRead.toFloat() / fileSize
-                            } else 0f
+                        if (fileSize > 0) {
+                            val progress = totalBytesRead.toFloat() / fileSize
+                            withContext(Dispatchers.Main) {
                             onProgress(progress)
-                            println("Download progress: ${(progress * 100).toInt()}%")
-                            lastProgressUpdate = totalBytesRead
                         }
+                        } else {
+                            // 如果文件大小未知，可以提供一个不确定的进度或仅显示下载速度
+                            withContext(Dispatchers.Main) {
+                                onProgress(-1f) // 表示进度未知
                     }
                 }
             }
-            
-            println("Download completed: $totalBytesRead bytes")
-            
-            // 修改文件类型判断逻辑
-            val fileType = when {
-                contentType.contains("zip", ignoreCase = true) || 
-                isZipFile(tempFile) -> DownloadType.ZIP
-                
-                contentType.contains("application/rive", ignoreCase = true) ||
-                (contentType.contains("octet-stream", ignoreCase = true) && isRiveFile(tempFile)) -> {
-                    DownloadType.RIVE
                 }
-                
-                else -> throw Exception("不支持的文件类型: $contentType")
             }
+            println("File downloaded successfully to ${tempFile.absolutePath}")
             
-            fileType
-            
+            // --- 简化文件类型判断逻辑 --- 
+            val fileType: DownloadType = when {
+                 contentType.contains("zip", ignoreCase = true) -> DownloadType.ZIP
+                 contentType.contains("application/rive", ignoreCase = true) -> DownloadType.RIVE
+                 fileExtension.equals("zip", ignoreCase = true) || isZipFile(tempFile) -> DownloadType.ZIP
+                 fileExtension.equals("riv", ignoreCase = true) || isRiveFile(tempFile) -> DownloadType.RIVE
+                 // 如果都不是，则直接抛出异常
+                 else -> throw IOException("不支持的文件类型: $contentType / $originalFileName") 
+            }
+            println("Determined file type: $fileType")
+            // --- 结束简化 --- 
+
+             // 如果类型是 ZIP 或 RIVE，重命名文件以包含正确的扩展名
+             var finalFilePath = tempFile.absolutePath
+             if (fileType == DownloadType.ZIP && !tempFile.name.endsWith(".zip", ignoreCase = true)) {
+                 val newFile = File(tempFile.parent, "$baseName.zip")
+                 if (tempFile.renameTo(newFile)) {
+                     finalFilePath = newFile.absolutePath
+                     println("Renamed temp file to: ${newFile.name}")
+                 } else {
+                     println("Warning: Failed to rename temp file to .zip")
+                 }
+             } else if (fileType == DownloadType.RIVE && !tempFile.name.endsWith(".riv", ignoreCase = true)) {
+                 val newFile = File(tempFile.parent, "$baseName.riv")
+                 if (tempFile.renameTo(newFile)) {
+                      finalFilePath = newFile.absolutePath
+                      println("Renamed temp file to: ${newFile.name}")
+                 } else {
+                     println("Warning: Failed to rename temp file to .riv")
+                 }
+             } 
+
+            DownloadResult(finalFilePath, fileType) 
         } catch (e: Exception) {
             println("Download error: ${e.message}")
             e.printStackTrace()
+            tempFile?.delete() 
             throw e
         } finally {
             connection?.disconnect()
@@ -1039,116 +1182,236 @@ fun RivePlayer(file: java.io.File) {
     )
 }
 
-// 修改解压函数
-fun unzipMedia(context: Context): List<MediaFile> {
-    println("Starting unzip process")
-    // 查找下载的 zip 文件
-    val files = context.filesDir.listFiles()
-    val zipFile = files?.firstOrNull { it.name.endsWith(".zip") }
-        ?: return emptyList()
-        
-    val outputDir = File(context.filesDir, "unzipped_media").apply {
-        deleteRecursively() // 清除旧文件
+// 修改解压函数，恢复处理嵌套 ZIP 的逻辑
+fun unzipMedia(context: Context, zipFile: File): List<MediaFile> {
+    println("Starting unzip process for ${zipFile.name}")
+    val outputDirName = "unzipped_${zipFile.nameWithoutExtension}_${System.currentTimeMillis()}"
+    val outputDir = File(context.cacheDir, outputDirName).apply {
+        deleteRecursively()
         mkdirs()
     }
+    println("Unzipping to: ${outputDir.absolutePath}")
     
     val mediaFiles = mutableListOf<MediaFile>()
+
     try {
-        println("Opening zip file: ${zipFile.absolutePath}")
-        println("Zip file exists: ${zipFile.exists()}")
-        println("Zip file size: ${zipFile.length()}")
-        
-        val zip = ZipFile(zipFile)
-        println("Total entries in zip: ${zip.size()}")
-        
-        zip.entries().asSequence().forEach { entry ->
-            println("Processing entry: ${entry.name}")
-            
-            // 跳过 MacOS 系统生成的隐藏文件夹
-            if (entry.name.startsWith("__MACOSX") || entry.name.startsWith(".")) {
-                println("Skipping MacOS system file: ${entry.name}")
-                return@forEach
-            }
-            
-            val tempFile = File(outputDir, entry.name)
-            
-            // 解压文件
-            BufferedInputStream(zip.getInputStream(entry)).use { input ->
-                BufferedOutputStream(FileOutputStream(tempFile)).use { output ->
-                    input.copyTo(output)
-                }
-            }
-            
-            println("Extracted file: ${tempFile.absolutePath}")
-            
-            // 如果是 zip 文件，继续解压
-            if (tempFile.name.lowercase().endsWith(".zip")) {
-                println("Found nested zip file: ${tempFile.name}")
-                try {
-                    val nestedZip = ZipFile(tempFile)
-                    nestedZip.entries().asSequence().forEach { nestedEntry ->
-                        println("Processing nested entry: ${nestedEntry.name}")
-                        
-                        if (nestedEntry.name.startsWith("__MACOSX") || nestedEntry.name.startsWith(".")) {
-                            return@forEach
-                        }
-                        
-                        val fileName = nestedEntry.name.substringAfterLast('/')
-                        val outFile = File(outputDir, fileName)
-                        
-                        // 解压嵌套的文件
-                        BufferedInputStream(nestedZip.getInputStream(nestedEntry)).use { input ->
-                            BufferedOutputStream(FileOutputStream(outFile)).use { output ->
-                                input.copyTo(output)
+        ZipInputStream(BufferedInputStream(FileInputStream(zipFile))).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                val entryName = entry.name
+                // 忽略 Mac 的 __MACOSX 目录和 .DS_Store 等隐藏文件
+                if (!entry.isDirectory && !entryName.startsWith("__MACOSX/") && !entryName.startsWith(".")) {
+                    val outputFile = File(outputDir, entryName)
+                    // 确保父目录存在
+                    outputFile.parentFile?.mkdirs()
+
+                    println("Extracting: ${entry.name} to ${outputFile.absolutePath}")
+                    try {
+                        FileOutputStream(outputFile).use { fos ->
+                            val buffer = ByteArray(8192)
+                            var len: Int
+                            while (zis.read(buffer).also { len = it } > 0) {
+                                fos.write(buffer, 0, len)
                             }
                         }
-                        
-                        println("Extracted nested file: ${outFile.absolutePath}")
-                        
-                        // 检查是否为媒体文件
-                        val isImage = fileName.lowercase().let { name ->
-                            name.endsWith(".jpg") || name.endsWith(".jpeg") || 
-                            name.endsWith(".png") || name.endsWith(".gif") || 
-                            name.endsWith(".bmp")
+
+                        // 检查解压出的文件是否是嵌套的 ZIP 文件
+                        if (outputFile.extension.equals("zip", ignoreCase = true)) {
+                            println("Found nested zip: ${outputFile.name}, processing...")
+                            // 解压嵌套的 ZIP 文件到同一个输出目录
+                            try {
+                                ZipInputStream(BufferedInputStream(FileInputStream(outputFile))).use { nestedZis ->
+                                    var nestedEntry = nestedZis.nextEntry
+                                    while (nestedEntry != null) {
+                                        val nestedEntryName = nestedEntry.name
+                                        if (!nestedEntry.isDirectory && !nestedEntryName.startsWith("__MACOSX/") && !nestedEntryName.startsWith(".")) {
+                                            // 注意：使用原始 entry 名称，防止路径重复
+                                            val nestedOutputFile = File(outputDir, nestedEntryName)
+                                            nestedOutputFile.parentFile?.mkdirs()
+                                            println("Extracting nested: ${nestedEntry.name} to ${nestedOutputFile.absolutePath}")
+                                            try {
+                                                FileOutputStream(nestedOutputFile).use { nestedFos ->
+                                                    val nestedBuffer = ByteArray(8192)
+                                                    var nestedLen: Int
+                                                    while (nestedZis.read(nestedBuffer).also { nestedLen = it } > 0) {
+                                                        nestedFos.write(nestedBuffer, 0, nestedLen)
+                                                    }
+                                                }
+                                                // 检查解压出的嵌套文件是否是媒体文件
+                                                val nestedFileType = when (nestedOutputFile.extension.lowercase()) {
+                                                    "jpg", "jpeg", "png", "gif", "bmp", "webp" -> MediaType.IMAGE
+                                                    "mp4", "3gp", "mkv", "webm" -> MediaType.VIDEO
+                                                    else -> null
+                                                }
+                                                if (nestedFileType != null) {
+                                                    mediaFiles.add(MediaFile(nestedOutputFile, nestedFileType))
+                                                    println("Added nested media file: ${nestedOutputFile.name}, Type: $nestedFileType")
+                                                } else {
+                                                    println("Skipping non-media nested file: ${nestedOutputFile.name}")
+                                                    nestedOutputFile.delete()
+                                                }
+                                            } catch (e: Exception) {
+                                                println("Error extracting nested file ${nestedEntry.name}: ${e.message}")
+                                                nestedOutputFile.delete()
+                                            }
+                                        }
+                                        nestedZis.closeEntry()
+                                        nestedEntry = nestedZis.nextEntry
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                println("Error processing nested zip ${outputFile.name}: ${e.message}")
+                            }
+                            // 删除临时的嵌套 ZIP 文件
+                            outputFile.delete()
+                            println("Deleted nested zip: ${outputFile.name}")
+
+                        } else {
+                            // 如果不是嵌套 ZIP 文件，按原逻辑判断是否为媒体文件
+                            val fileType = when (outputFile.extension.lowercase()) {
+                                "jpg", "jpeg", "png", "gif", "bmp", "webp" -> MediaType.IMAGE
+                                "mp4", "3gp", "mkv", "webm" -> MediaType.VIDEO
+                                else -> null
+                            }
+
+                            if (fileType != null) {
+                                mediaFiles.add(MediaFile(outputFile, fileType))
+                                println("Added media file: ${outputFile.name}, Type: $fileType")
+                            } else {
+                                println("Skipping non-media file: ${outputFile.name}")
+                                outputFile.delete()
+                            }
                         }
-                        val isVideo = fileName.lowercase().let { name ->
-                            name.endsWith(".mp4") || name.endsWith(".avi") || 
-                            name.endsWith(".mov") || name.endsWith(".wmv") || 
-                            name.endsWith(".flv")
-                        }
-                        
-                        if (isImage || isVideo) {
-                            println("Found media file: $fileName")
-                            mediaFiles.add(
-                                MediaFile(
-                                    file = outFile,
-                                    type = if (isImage) MediaType.IMAGE else MediaType.VIDEO
-                                )
-                            )
-                        }
+                    } catch (e: Exception) {
+                        println("Error extracting file ${entry.name}: ${e.message}")
+                        // 尝试删除不完整的文件
+                        outputFile.delete()
                     }
-                    nestedZip.close()
-                    tempFile.delete() // 删除临时的嵌套 zip 文件
-                } catch (e: Exception) {
-                    println("Error processing nested zip: ${e.message}")
-                    e.printStackTrace()
                 }
+                zis.closeEntry()
+                entry = zis.nextEntry
             }
         }
-        
-        zip.close()
-        
+        println("Unzip completed. Found ${mediaFiles.size} media files.")
     } catch (e: Exception) {
         println("Unzip error: ${e.message}")
         e.printStackTrace()
+        outputDir.deleteRecursively()
+        return emptyList()
     }
-    
-    println("Found ${mediaFiles.size} media files")
-    mediaFiles.forEach { 
-        println("Media file: ${it.file.absolutePath}, type: ${it.type}")
-    }
-    
+
     return mediaFiles
+}
+
+// 修改 unzipSavedZipForPreview 函数，使用正确的 Kotlin 字符串语法
+fun unzipSavedZipForPreview(context: Context, savedZipFile: File): List<MediaFile> {
+    println("Unzipping saved file for preview: ${savedZipFile.name}")
+    val previewDir = File(context.cacheDir, "unzipped_saved_preview").apply {
+         deleteRecursively()
+         mkdirs()
+    }
+    println("Preview unzip target directory: ${previewDir.absolutePath}")
+
+    val mediaFiles = mutableListOf<MediaFile>()
+    try {
+        ZipInputStream(BufferedInputStream(FileInputStream(savedZipFile))).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                val entryName = entry.name
+                // 使用正确的 Kotlin 字符串语法
+                if (!entry.isDirectory && !entryName.startsWith("__MACOSX/") && !entryName.startsWith(".")) {
+                     val outputFile = File(previewDir, entryName)
+                     outputFile.parentFile?.mkdirs()
+                     println("Extracting for preview: ${entry.name} to ${outputFile.absolutePath}")
+                     try {
+                          FileOutputStream(outputFile).use { fos ->
+                              val buffer = ByteArray(8192)
+                              var len: Int
+                              while (zis.read(buffer).also { len = it } > 0) {
+                                  fos.write(buffer, 0, len)
+                              }
+                          }
+
+                          // --- 开始：添加处理嵌套 ZIP 的逻辑 (同 unzipMedia) ---
+                          if (outputFile.extension.equals("zip", ignoreCase = true)) {
+                              println("Found nested zip in saved file: ${outputFile.name}, processing...")
+                              try {
+                                  ZipInputStream(BufferedInputStream(FileInputStream(outputFile))).use { nestedZis ->
+                                      var nestedEntry = nestedZis.nextEntry
+                                      while (nestedEntry != null) {
+                                          val nestedEntryName = nestedEntry.name
+                                          // 使用正确的 Kotlin 字符串语法
+                                          if (!nestedEntry.isDirectory && !nestedEntryName.startsWith("__MACOSX/") && !nestedEntryName.startsWith(".")) {
+                                              val nestedOutputFile = File(previewDir, nestedEntryName)
+                                              nestedOutputFile.parentFile?.mkdirs()
+                                              println("Extracting nested for preview: ${nestedEntry.name} to ${nestedOutputFile.absolutePath}")
+                                              try {
+                                                  FileOutputStream(nestedOutputFile).use { nestedFos ->
+                                                      val nestedBuffer = ByteArray(8192)
+                                                      var nestedLen: Int
+                                                      while (nestedZis.read(nestedBuffer).also { nestedLen = it } > 0) {
+                                                          nestedFos.write(nestedBuffer, 0, nestedLen)
+                                                      }
+                                                  }
+                                                  val nestedFileType = when (nestedOutputFile.extension.lowercase()) {
+                                                      "jpg", "jpeg", "png", "gif", "bmp", "webp" -> MediaType.IMAGE
+                                                      "mp4", "3gp", "mkv", "webm" -> MediaType.VIDEO
+                                                      else -> null
+                                                  }
+                                                  if (nestedFileType != null) {
+                                                      mediaFiles.add(MediaFile(nestedOutputFile, nestedFileType))
+                                                      println("Added nested media file for preview: ${nestedOutputFile.name}, Type: $nestedFileType")
+                                                  } else {
+                                                      println("Skipping non-media nested file for preview: ${nestedOutputFile.name}")
+                                                      nestedOutputFile.delete()
+                                                  }
+                } catch (e: Exception) {
+                                                  println("Error extracting nested file for preview ${nestedEntry.name}: ${e.message}")
+                                                  nestedOutputFile.delete()
+                }
+            }
+                                          nestedZis.closeEntry()
+                                          nestedEntry = nestedZis.nextEntry
+        }
+                                  }
+    } catch (e: Exception) {
+                                  println("Error processing nested zip for preview ${outputFile.name}: ${e.message}")
+                              }
+                              outputFile.delete() // 删除临时的嵌套 ZIP
+                              println("Deleted nested zip for preview: ${outputFile.name}")
+                          } else {
+                              // 如果不是嵌套 ZIP，按原逻辑判断媒体类型
+                              val fileType = when (outputFile.extension.lowercase()) {
+                                   "jpg", "jpeg", "png", "gif", "bmp", "webp" -> MediaType.IMAGE
+                                   "mp4", "3gp", "mkv", "webm" -> MediaType.VIDEO
+                                   else -> null
+                              }
+
+                              if (fileType != null) {
+                                   mediaFiles.add(MediaFile(outputFile, fileType))
+                              } else {
+                                   println("Skipping non-media file for preview: ${outputFile.name}")
+                                   outputFile.delete()
+                              }
+                          }
+                          // --- 结束：添加处理嵌套 ZIP 的逻辑 ---
+
+                     } catch (e: Exception) {
+                          println("Error extracting file for preview ${entry.name}: ${e.message}")
+                          outputFile.delete()
+                     }
+                }
+                zis.closeEntry()
+                entry = zis.nextEntry
+            }
+        }
+        println("Preview unzip completed. Found ${mediaFiles.size} media files.")
+    return mediaFiles
+    } catch (e: Exception) {
+        println("Error during preview unzip: ${e.message}")
+        previewDir.deleteRecursively()
+        throw e
+    }
 }
 
 @OptIn(ExperimentalPagerApi::class)
