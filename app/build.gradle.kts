@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.watchview"  // 应用 ID
         minSdk = 30                             // 最低支持的 Android 版本 (WearOS)
         targetSdk = 34                          // 目标 Android 版本
-        versionCode = 1                         // 应用版本号
-        versionName = "1.0.4"                     // 应用版本名称
+        versionCode = 2                         // 应用版本号
+        versionName = "2.0.1"                     // 应用版本名称
         vectorDrawables {
             useSupportLibrary = true            // 启用矢量图支持
         }
@@ -72,6 +72,10 @@ dependencies {
     androidTestImplementation(libs.ui.test.junit4)
     debugImplementation(libs.ui.tooling)
     debugImplementation(libs.ui.test.manifest)
+    
+    // ExoPlayer 依赖
+    implementation("androidx.media3:media3-exoplayer:1.3.1")
+    implementation("androidx.media3:media3-ui:1.3.1")
     
     // 第三方库依赖
     implementation("com.google.accompanist:accompanist-pager:0.28.0")  // 分页组件
