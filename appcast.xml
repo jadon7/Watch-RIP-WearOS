@@ -3,7 +3,7 @@
   <channel>
     <title>Watch View (Wear OS) 更新</title>
     <!-- 确保这个 URL 指向该文件在 feature/wear-app-installer 分支上的 Raw URL -->
-    <link>https://raw.githubusercontent.com/jadon7/Watch-RIP-MAC/main/appcast.xml</link>
+    <link>https://raw.githubusercontent.com/jadon7/Watch-RIP-WearOS/refs/heads/main/appcast.xml</link>
     <description>手表APP</description>
     <language>zh-CN</language>
     <!-- 最新版本 -->
