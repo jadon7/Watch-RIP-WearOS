@@ -373,168 +373,213 @@ fun DownloadScreen(
         },
         sheetPeekHeight = sheetPeekHeight,
         sheetShape = MaterialTheme.shapes.large, 
-        sheetBackgroundColor = MaterialTheme.colors.surface
-    ) { paddingValues -> 
-        // 根据目标状态计算目标值
-        val targetScale = if (bottomSheetState.targetValue == BottomSheetValue.Expanded) 0.85f else 1.0f
-        val targetAlpha = if (bottomSheetState.targetValue == BottomSheetValue.Expanded) 0.5f else 1.0f
-        
-        // 使用 animateFloatAsState 创建动画状态
-        val scale by animateFloatAsState(targetValue = targetScale)
-        val alpha by animateFloatAsState(targetValue = targetAlpha)
-        
-        // 主内容区域 Box
-        Box(
-             modifier = Modifier
-                 .padding(paddingValues) 
-                 .fillMaxSize()
-                 .background(MaterialTheme.colors.background) 
-                 // --- 应用动画状态 --- 
-                 .graphicsLayer {
-                     scaleX = scale
-                     scaleY = scale
-                     this.alpha = alpha
-                 }
-                 // --- 结束应用 --- 
-         ) {
-             // 主内容的逻辑不变
-            if (!isWifiConnected) {
-                 Box( 
-                     modifier = Modifier.fillMaxSize(), // 背景由外部 Box 处理
-                     contentAlignment = Alignment.Center
-                 ) {
-                     Column(
-                         horizontalAlignment = Alignment.CenterHorizontally,
-                         verticalArrangement = Arrangement.Center
+        sheetBackgroundColor = MaterialTheme.colors.surface,
+        backgroundColor = MaterialTheme.colors.background,
+        content = { paddingValues -> 
+            // 根据目标状态计算目标值
+            val targetScale = if (bottomSheetState.targetValue == BottomSheetValue.Expanded) 0.85f else 1.0f
+            val targetAlpha = if (bottomSheetState.targetValue == BottomSheetValue.Expanded) 0.5f else 1.0f
+            
+            // 使用 animateFloatAsState 创建动画状态
+            val scale by animateFloatAsState(targetValue = targetScale)
+            val alpha by animateFloatAsState(targetValue = targetAlpha)
+            
+            // 主内容区域 Box
+            Box(
+                 modifier = Modifier
+                     .padding(paddingValues) 
+                     .fillMaxSize()
+                     .background(MaterialTheme.colors.background) 
+                     // --- 应用动画状态 --- 
+                     .graphicsLayer {
+                         scaleX = scale
+                         scaleY = scale
+                         this.alpha = alpha
+                     }
+                     // --- 结束应用 --- 
+             ) {
+                 // 主内容的逻辑不变
+                if (!isWifiConnected) {
+                     Box( 
+                         modifier = Modifier.fillMaxSize(), // 背景由外部 Box 处理
+                         contentAlignment = Alignment.Center
                      ) {
-                         Text("请连接Wi-Fi或选择有线传输", color = Color.White, fontSize = 14.sp)
-                         
-                         Spacer(modifier = Modifier.height(16.dp))
-                         
-                         // 即使未连接 WiFi，也显示有线传输按钮 (如果有本地文件)
-                         if (hasLocalFile) {
-                             Button(
-                                 onClick = { handleOpenLocalFile() },
-                                 modifier = Modifier
-                                     .width(160.dp)
-                                     .height(48.dp)
-                                     .then(Modifier.alpha(if (isOpeningLocalFile) 0.2f else 1.0f)), // 控制透明度
-                                 colors = ButtonDefaults.buttonColors(
-                                     backgroundColor = Color(0xFF4CAF50)
-                                 ),
-                                 shape = CircleShape
-                             ) {
-                                 Text("有线传输", color = Color.White, fontSize = 10.sp)
+                         Column(
+                             horizontalAlignment = Alignment.CenterHorizontally,
+                             verticalArrangement = Arrangement.Center
+                         ) {
+                             Text("请连接Wi-Fi或选择有线传输", color = Color.White, fontSize = 14.sp)
+                             
+                             Spacer(modifier = Modifier.height(16.dp))
+                             
+                             // 即使未连接 WiFi，也显示有线传输按钮 (如果有本地文件)
+                             if (hasLocalFile) {
+                                 Button(
+                                     onClick = { handleOpenLocalFile() },
+                                     modifier = Modifier
+                                         .width(160.dp)
+                                         .height(48.dp)
+                                         .then(Modifier.alpha(if (isOpeningLocalFile) 0.2f else 1.0f)), // 控制透明度
+                                     colors = ButtonDefaults.buttonColors(
+                                         backgroundColor = Color(0xFF4CAF50)
+                                     ),
+                                     shape = CircleShape
+                                 ) {
+                                     Text("有线传输", color = Color.White, fontSize = 14.sp)
+                                 }
                              }
                          }
                      }
-                 }
-            } else if (showScanScreen) {
-                // NetworkScanScreen 内部可能也需要检查背景设置
-                NetworkScanScreen(
-                    servers = servers,
-                    isScanning = isScanning,
-                    onServerSelected = { server ->
-                        if (server.isManualInput) {
-                            showScanScreen = false
-                        } else {
-                            ipAddress = server.ip
-                            showScanScreen = false
-                            handleDownload("http://$ipAddress:8080")
-                        }
-                        // 点击扫描结果或手动输入后，可以考虑折叠底部面板 (如果它是展开的)
-                        coroutineScope.launch {
-                            bottomSheetState.collapse()
-                        }
-                    },
-                    onCancelScan = {
-                        scanJob.value?.cancel()
-                        if (isScanning) {
-                            showScanScreen = false
-                        } else {
-                            isScanning = true
-                            scanJob.value = coroutineScope.launch {
-                                servers = scanLocalNetwork(context)
-                                isScanning = false
+                } else if (showScanScreen) {
+                    // NetworkScanScreen 内部可能也需要检查背景设置
+                    NetworkScanScreen(
+                        servers = servers,
+                        isScanning = isScanning,
+                        onServerSelected = { server ->
+                            if (server.isManualInput) {
+                                showScanScreen = false
+                            } else {
+                                ipAddress = server.ip
+                                showScanScreen = false
+                                handleDownload("http://$ipAddress:8080")
                             }
-                        }
-                        coroutineScope.launch {
-                            bottomSheetState.collapse() // 取消扫描或重扫也折叠
-                        }
-                    },
-                    hasLocalFile = hasLocalFile,  // 传递本地文件状态
-                    onOpenLocalFile = {  // 传递处理本地文件的回调
-                        handleOpenLocalFile()
-                        coroutineScope.launch {
-                            bottomSheetState.collapse() // 打开本地文件后折叠
-                        }
-                    },
-                    isOpeningLocalFile = isOpeningLocalFile // 传递状态
-                )
-            } else {
-                // 手动输入页面 Column
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    var focusState by remember { mutableStateOf(false) }
-                    val focusManager = LocalFocusManager.current
-                    
-                    OutlinedTextField(
-                        value = ipAddress,
-                        onValueChange = { newValue -> 
-                            // 只允许输入数字和点号，且长度不超过15
-                            if (newValue.length <= 15 && newValue.all { it.isDigit() || it == '.' }) {
-                                ipAddress = newValue
+                            // 点击扫描结果或手动输入后，可以考虑折叠底部面板 (如果它是展开的)
+                            coroutineScope.launch {
+                                bottomSheetState.collapse()
                             }
                         },
-                        label = { 
-                            Text(
-                                "设备地址",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colors.onBackground.copy(alpha = 0.3f)
-                            )
-                        },
-                        placeholder = { Text("", color = MaterialTheme.colors.onBackground.copy(alpha = 1f), fontSize = 12.sp) },
-                        modifier = Modifier
-                            .fillMaxWidth(),
-                        textStyle = androidx.compose.ui.text.TextStyle(
-                            fontSize = 16.sp
-                        ),
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Text,
-                            imeAction = ImeAction.Done
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onDone = {
-                                focusManager.clearFocus()
-                                val url = "http://$ipAddress:8080"
-                                downloadStatus = "下载中..."
-                                handleDownload(url)
+                        onCancelScan = {
+                            scanJob.value?.cancel()
+                            if (isScanning) {
+                                showScanScreen = false
+                            } else {
+                                isScanning = true
+                                scanJob.value = coroutineScope.launch {
+                                    servers = scanLocalNetwork(context)
+                                    isScanning = false
+                                }
                             }
-                        ),
-                        colors = TextFieldDefaults.outlinedTextFieldColors(
-                            textColor = MaterialTheme.colors.onBackground,
-                            cursorColor = MaterialTheme.colors.primary,
-                            focusedBorderColor = MaterialTheme.colors.primary,
-                            unfocusedBorderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.2f),
-                            placeholderColor = MaterialTheme.colors.onBackground.copy(alpha = 1f)
-                        ),
-                        singleLine = true
+                            coroutineScope.launch {
+                                bottomSheetState.collapse() // 取消扫描或重扫也折叠
+                            }
+                        },
+                        hasLocalFile = hasLocalFile,  // 传递本地文件状态
+                        onOpenLocalFile = {  // 传递处理本地文件的回调
+                            handleOpenLocalFile()
+                            coroutineScope.launch {
+                                bottomSheetState.collapse() // 打开本地文件后折叠
+                            }
+                        },
+                        isOpeningLocalFile = isOpeningLocalFile // 传递状态
                     )
-                    Spacer(modifier = Modifier.height(6.dp))  // 输入框与按钮之间的间距
-                    // 修改为水平并排的两个按钮
-                    if (hasLocalFile) {
-                        // 使用 Row 来左右并排放置按钮
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // 预览按钮
+                } else {
+                    // 手动输入页面 Column
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        var focusState by remember { mutableStateOf(false) }
+                        val focusManager = LocalFocusManager.current
+                        
+                        OutlinedTextField(
+                            value = ipAddress,
+                            onValueChange = { newValue -> 
+                                // 只允许输入数字和点号，且长度不超过15
+                                if (newValue.length <= 15 && newValue.all { it.isDigit() || it == '.' }) {
+                                    ipAddress = newValue
+                                }
+                            },
+                            label = { 
+                                Text(
+                                    "设备地址",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colors.onBackground.copy(alpha = 0.3f)
+                                )
+                            },
+                            placeholder = { Text("", color = MaterialTheme.colors.onBackground.copy(alpha = 1f), fontSize = 12.sp) },
+                            modifier = Modifier
+                                .fillMaxWidth(),
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                fontSize = 16.sp
+                            ),
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Text,
+                                imeAction = ImeAction.Done
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onDone = {
+                                    focusManager.clearFocus()
+                                    val url = "http://$ipAddress:8080"
+                                    downloadStatus = "下载中..."
+                                    handleDownload(url)
+                                }
+                            ),
+                            colors = TextFieldDefaults.outlinedTextFieldColors(
+                                textColor = MaterialTheme.colors.onBackground,
+                                cursorColor = MaterialTheme.colors.primary,
+                                focusedBorderColor = MaterialTheme.colors.primary,
+                                unfocusedBorderColor = MaterialTheme.colors.onBackground.copy(alpha = 0.2f),
+                                placeholderColor = MaterialTheme.colors.onBackground.copy(alpha = 1f)
+                            ),
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))  // 输入框与按钮之间的间距
+                        // 修改为水平并排的两个按钮
+                        if (hasLocalFile) {
+                            // 使用 Row 来左右并排放置按钮
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // 预览按钮
+                                Button(
+                                    onClick = {
+                                        val url = "http://$ipAddress:8080"
+                                        downloadStatus = "下载中..."
+                                        handleDownload(url)
+                                        coroutineScope.launch { bottomSheetState.collapse() } // 开始下载后折叠
+                                    },
+                                    enabled = !isDownloading,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .padding(end = 1.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        backgroundColor = Color(0xFF2196F3),
+                                        disabledBackgroundColor = Color.Gray,
+                                        disabledContentColor = Color.White
+                                    ),
+                                    shape = CircleShape
+                                ) {
+                                    Text(
+                                        text = if (isDownloading) "下载中..." else "WIFI下载",
+                                        color = Color.White,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                                
+                                // 有线传输按钮
+                                Button(
+                                    onClick = { handleOpenLocalFile() },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .padding(start = 1.dp)
+                                        .then(Modifier.alpha(if (isOpeningLocalFile) 0.2f else 1.0f)), // 控制透明度
+                                    colors = ButtonDefaults.buttonColors(
+                                        backgroundColor = Color(0xFF4CAF50)
+                                    ),
+                                    shape = CircleShape
+                                ) {
+                                    Text("有线传输", color = Color.White, fontSize = 10.sp)
+                                }
+                            }
+                        } else {
+                            // 只有预览按钮
                             Button(
                                 onClick = {
                                     val url = "http://$ipAddress:8080"
@@ -544,9 +589,8 @@ fun DownloadScreen(
                                 },
                                 enabled = !isDownloading,
                                 modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .padding(end = 1.dp),
+                                    .width(300.dp)
+                                    .height(48.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     backgroundColor = Color(0xFF2196F3),
                                     disabledBackgroundColor = Color.Gray,
@@ -557,104 +601,62 @@ fun DownloadScreen(
                                 Text(
                                     text = if (isDownloading) "下载中..." else "WIFI下载",
                                     color = Color.White,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))  // 按钮与状态文本之间的间距
+                        if (isDownloading) {
+                            if (downloadProgress > 0) {
+                                Text(
+                                    text = "${downloadProgress}%",
+                                    color = Color.White,
                                     fontSize = 10.sp
                                 )
                             }
-                            
-                            // 有线传输按钮
-                            Button(
-                                onClick = { handleOpenLocalFile() },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .padding(start = 1.dp)
-                                    .then(Modifier.alpha(if (isOpeningLocalFile) 0.2f else 1.0f)), // 控制透明度
-                                colors = ButtonDefaults.buttonColors(
-                                    backgroundColor = Color(0xFF4CAF50)
-                                ),
-                                shape = CircleShape
-                            ) {
-                                Text("有线传输", color = Color.White, fontSize = 10.sp)
+                            if (downloadSpeed.isNotEmpty()) {
+                                Text(
+                                    text = downloadSpeed,
+                                    color = Color.White,
+                                    fontSize = 10.sp
+                                )
                             }
-                        }
-                    } else {
-                        // 只有预览按钮
-                        Button(
-                            onClick = {
-                                val url = "http://$ipAddress:8080"
-                                downloadStatus = "下载中..."
-                                handleDownload(url)
-                                coroutineScope.launch { bottomSheetState.collapse() } // 开始下载后折叠
-                            },
-                            enabled = !isDownloading,
-                            modifier = Modifier
-                                .width(300.dp)
-                                .height(48.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                backgroundColor = Color(0xFF2196F3),
-                                disabledBackgroundColor = Color.Gray,
-                                disabledContentColor = Color.White
-                            ),
-                            shape = CircleShape
-                        ) {
+                        } else {
                             Text(
-                                text = if (isDownloading) "下载中..." else "WIFI下载",
-                                color = Color.White,
-                                fontSize = 14.sp
+                                text = downloadStatus,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colors.onBackground,
+                                fontSize = 8.sp                  // 状态文本大小
                             )
                         }
                     }
-                    
-                    Spacer(modifier = Modifier.height(8.dp))  // 按钮与状态文本之间的间距
-                    if (isDownloading) {
-                        if (downloadProgress > 0) {
-                            Text(
-                                text = "${downloadProgress}%",
-                                color = Color.White,
-                                fontSize = 10.sp
-                            )
-                        }
-                        if (downloadSpeed.isNotEmpty()) {
-                            Text(
-                                text = downloadSpeed,
-                                color = Color.White,
-                                fontSize = 10.sp
-                            )
-                        }
-                    } else {
+                }
+
+                // 顶部通知栏 (覆盖在其他内容之上)
+                AnimatedVisibility(
+                    visible = showTopNotification,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
-                            text = downloadStatus,
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colors.onBackground,
-                            fontSize = 8.sp                  // 状态文本大小
+                            text = topNotificationMessage,
+                            color = Color(0xFF4CAF50),
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
                         )
                     }
                 }
             }
-
-            // 顶部通知栏 (覆盖在其他内容之上)
-            AnimatedVisibility(
-                visible = showTopNotification,
-                modifier = Modifier.align(Alignment.TopCenter),
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = topNotificationMessage,
-                        color = Color(0xFF4CAF50),
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
         }
-    }
+    )
 }
 
 /**
