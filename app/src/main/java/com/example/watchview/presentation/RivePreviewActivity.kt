@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -24,8 +25,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.SecureFlagPolicy
 import com.example.watchview.presentation.theme.WatchViewTheme
 import java.io.File
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
 import app.rive.runtime.kotlin.core.File as RiveCoreFile
@@ -39,10 +39,6 @@ import android.os.BatteryManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.scrollable
-import androidx.compose.foundation.rememberScrollState
 import android.util.Log
 import app.rive.runtime.kotlin.controllers.RiveFileController
 import android.os.VibrationEffect
@@ -51,47 +47,73 @@ import android.os.VibratorManager
 import android.content.Context.VIBRATOR_MANAGER_SERVICE
 import android.content.Context.VIBRATOR_SERVICE
 import android.os.Build
+import android.os.Environment
+import android.widget.Toast
+import com.example.watchview.presentation.model.DownloadType
+import com.example.watchview.presentation.ui.ACTION_NEW_ADB_FILE
+import com.example.watchview.presentation.ui.EXTRA_FILE_PATH
+import com.example.watchview.presentation.ui.EXTRA_FILE_TYPE
+import com.example.watchview.utils.unzipMedia
 
 class RivePreviewActivity : ComponentActivity() {
-    // 修改变量名和注释以反映新的交互方式
+    // 使用强引用持有RiveView
     private var riveView: RiveAnimationView? = null
     private lateinit var vibrator: Vibrator
+    
+    // 添加错误计数器
+    private var errorCount = 0
+    private val maxErrorCount = 3
     
     // 添加电池电量状态
     private val _batteryLevel = MutableStateFlow(0f)
     val batteryLevel: StateFlow<Float> = _batteryLevel.asStateFlow()
+    
+    // 添加协程作用域
+    private val activityScope = MainScope()
 
     // 添加 Rive 事件监听器
     private val eventListener = object : RiveFileController.RiveEventListener {
         override fun notifyEvent(event: app.rive.runtime.kotlin.core.RiveEvent) {
-            Log.i("RiveEvent", "Event received: ${event.name}")
-            Log.i("RiveEvent", "Event type: ${event.type}")
-            Log.i("RiveEvent", "Event properties: ${event.properties}")
-            Log.i("RiveEvent", "Event data: ${event.data}")
-            
-            // 检查是否是振动事件
-            if (event.name == "vibratory") {
-                try {
+            try {
+                Log.i("RiveEvent", "Event received: ${event.name}")
+                
+                // 检查是否是振动事件
+                if (event.name == "vibratory") {
                     val state = event.properties?.get("state") as? Number
                     Log.d("RiveEvent", "Vibration state: $state")
                     if (state?.toDouble() == 1.0) {
-                        Log.d("RiveEvent", "Triggering vibration")
-                        // 在主线程中触发振动
                         runOnUiThread {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                // 降低振动强度（1-255），设置为较低的值
-                                val amplitude = 100 // 降低振动强度到 50（约20%的强度）
-                                val duration = 40L // 缩短振动时间到 50ms
-                                vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude))
-                            } else {
-                                @Suppress("DEPRECATION")
-                                vibrator.vibrate(50) // 老版本 Android 只调整时长
+                            try {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    val amplitude = 100
+                                    val duration = 40L
+                                    vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude))
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    vibrator.vibrate(50)
+                                }
+                            } catch (e: Exception) {
+                                Log.e("RiveEvent", "Error during vibration", e)
                             }
                         }
                     }
-                } catch (e: Exception) {
-                    Log.e("RiveEvent", "Error triggering vibration", e)
                 }
+            } catch (e: Exception) {
+                Log.e("RiveEvent", "Error in event listener", e)
+                handleError(e)
+            }
+        }
+    }
+
+    private fun handleError(e: Exception) {
+        errorCount++
+        Log.e("RivePreviewActivity", "Error occurred: ${e.message}, count: $errorCount")
+        
+        if (errorCount >= maxErrorCount) {
+            Log.e("RivePreviewActivity", "Too many errors, finishing activity")
+            runOnUiThread {
+                Toast.makeText(this, "预览出现异常，即将关闭", Toast.LENGTH_SHORT).show()
+                finish()
             }
         }
     }
@@ -107,287 +129,412 @@ class RivePreviewActivity : ComponentActivity() {
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        
-        // 初始化振动器
-        vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vibratorManager = getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager
-            vibratorManager.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            getSystemService(VIBRATOR_SERVICE) as Vibrator
-        }
-        
-        // 禁用滑动手势
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-        )
-        
-        // 注册电池状态广播接收器
-        registerReceiver(
-            batteryReceiver,
-            IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-        )
-        
-        // 启用向上导航
-        actionBar?.setDisplayHomeAsUpEnabled(true)
-        
-        // 从 Intent 中获取文件路径和临时文件标记
-        val filePath = intent.getStringExtra("file_path") ?: return
-        val isTempFile = intent.getBooleanExtra("is_temp_file", false)
-        
-        setContent {
-            WatchViewTheme {
-                // 添加对话框状态
-                val showDialog = remember { mutableStateOf(false) }
-                // 添加保存状态
-                var isSaved by remember { mutableStateOf(false) }
+    // 添加新的文件接收广播
+    private val newFileReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            Log.d("RivePreviewActivity", "收到广播: ${intent.action}")
+            
+            if (intent.action == ACTION_NEW_ADB_FILE) {
+                Log.d("RivePreviewActivity", "确认收到 ACTION_NEW_ADB_FILE 广播")
                 
-                if (showDialog.value) {
-                    Dialog(
-                        onDismissRequest = { 
-                            Log.d("DialogDebug", "Dialog dismissed by outside click")
-                            showDialog.value = false 
-                        },
-                        properties = DialogProperties(
-                            dismissOnBackPress = true,
-                            dismissOnClickOutside = true,
-                            securePolicy = SecureFlagPolicy.Inherit,
-                            usePlatformDefaultWidth = false
-                        )
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.9f))
-                                .clickable { 
-                                    Log.d("DialogDebug", "Dialog background clicked")
-                                    showDialog.value = false 
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .padding(horizontal = 48.dp)
-                                    .clickable(enabled = false) {}, // 防止点击传递到背景
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                // 重新播放按钮
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(40.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF2196F3))
-                                        .clickable {
-                                            Log.d("DialogDebug", "Replay button clicked")
-                                            try {
-                                                showDialog.value = false
-                                                // 重新播放当前 Rive 文件
-                                                riveView?.let {
-                                                    it.reset()
-                                                    it.play()
-                                                }
-                                                Log.d("DialogDebug", "Replay successful")
-                                            } catch (e: Exception) {
-                                                Log.e("DialogDebug", "Error during replay", e)
-                                            }
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    BasicText(
-                                        text = "重新播放",
-                                        modifier = Modifier.padding(horizontal = 16.dp),
-                                        style = androidx.compose.ui.text.TextStyle(
-                                            color = Color.White,
-                                            fontSize = 14.sp
-                                        )
-                                    )
-                                }
-                                
-                                Spacer(modifier = Modifier.height(8.dp))
-                                
-                                // 保存文件按钮（仅当是临时文件且未保存时显示）
-                                if (isTempFile && !isSaved) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(40.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFF4CAF50))
-                                            .clickable {
-                                                Log.d("DialogDebug", "Save button clicked")
-                                                try {
-                                                    showDialog.value = false
-                                                    // 保存文件
-                                                    val tempFile = File(filePath)
-                                                    val riveDir = File(this@RivePreviewActivity.filesDir, "saved_rive")
-                                                    if (!riveDir.exists()) {
-                                                        riveDir.mkdirs()
-                                                    }
-                                                    
-                                                    // 获取原始文件名
-                                                    val originalName = tempFile.name
-                                                    val baseName = originalName.substringBeforeLast(".")
-                                                    val extension = originalName.substringAfterLast(".", "riv")
-                                                    
-                                                    // 生成不重复的文件名
-                                                    var index = 1
-                                                    var fileName = originalName
-                                                    var savedFile = File(riveDir.absolutePath, fileName)
-                                                    
-                                                    while (savedFile.exists()) {
-                                                        fileName = "${baseName}_${index}.${extension}"
-                                                        savedFile = File(riveDir.absolutePath, fileName)
-                                                        index++
-                                                    }
-                                                    
-                                                    // 复制文件
-                                                    tempFile.copyTo(savedFile, overwrite = true)
-                                                    Log.d("DialogDebug", "File saved successfully: ${savedFile.absolutePath}")
-                                                    
-                                                    // 显示保存成功提示
-                                                    val toast = android.widget.Toast.makeText(
-                                                        this@RivePreviewActivity,
-                                                        "已保存",
-                                                        android.widget.Toast.LENGTH_LONG
-                                                    )
-                                                    toast.setGravity(android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL, 0, 0)
-                                                    
-                                                    // 获取 Toast 的视图并修改样式
-                                                    toast.view?.apply {
-                                                        // 移除图标
-                                                        if (this is android.widget.LinearLayout) {
-                                                            removeViewAt(0)
-                                                        }
-                                                        // 设置文字大小
-                                                        findViewById<android.widget.TextView>(android.R.id.message)?.apply {
-                                                            textSize = 10f
-                                                        }
-                                                    }
-                                                    
-                                                    toast.show()
-                                                    
-                                                    // 1秒后取消显示
-                                                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                                        toast.cancel()
-                                                    }, 1000)
-                                                    
-                                                    // 更新保存状态
-                                                    isSaved = true
-                                                } catch (e: Exception) {
-                                                    Log.e("DialogDebug", "Error during save", e)
-                                                }
-                                            },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        BasicText(
-                                            text = "保存文件",
-                                            modifier = Modifier.padding(horizontal = 16.dp),
-                                            style = androidx.compose.ui.text.TextStyle(
-                                                color = Color.White,
-                                                fontSize = 14.sp
-                                            )
-                                        )
-                                    }
+                val filePath = intent.getStringExtra(EXTRA_FILE_PATH)
+                val fileTypeName = intent.getStringExtra(EXTRA_FILE_TYPE)
+                
+                Log.d("RivePreviewActivity", "广播内容: filePath=$filePath, fileTypeName=$fileTypeName")
+                
+                if (filePath == null || fileTypeName == null) {
+                    Log.e("RivePreviewActivity", "广播缺少必要参数，无法处理")
+                    return
+                }
+                
+                try {
+                    val fileType = DownloadType.valueOf(fileTypeName)
+                    Log.d("RivePreviewActivity", "文件类型解析成功: $fileType")
+                    
+                    // 根据文件类型处理不同的情况
+                    when (fileType) {
+                        DownloadType.RIVE -> {
+                            // 如果是 Rive 文件，重新启动 Rive 预览活动
+                            Log.d("RivePreviewActivity", "收到新的 Rive 文件广播: $filePath")
+                            Log.d("RivePreviewActivity", "准备关闭当前活动并启动新的 Rive 预览")
+                            
+                            // 关闭当前活动，然后启动新的预览活动
+                            val newIntent = Intent(this@RivePreviewActivity, RivePreviewActivity::class.java).apply {
+                                putExtra("file_path", filePath)
+                                putExtra("is_temp_file", false)
+                                // 添加标记以清除之前的实例
+                                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            }
+                            Log.d("RivePreviewActivity", "即将启动新的 Rive 预览活动")
+                            startActivity(newIntent)
+                            Log.d("RivePreviewActivity", "即将结束当前 Rive 预览活动")
+                            finish()
+                        }
+                        DownloadType.ZIP -> {
+                            // 如果是 ZIP 文件，需要关闭当前活动，解压并启动媒体预览活动
+                            Log.d("RivePreviewActivity", "收到新的 ZIP 文件广播，切换到媒体预览: $filePath")
+                            
+                            // 关闭当前活动
+                            Log.d("RivePreviewActivity", "准备关闭当前活动")
+                            finish()
+                            
+                            // 启动协程进行解压和预览
+                            Log.d("RivePreviewActivity", "启动协程进行解压")
+                            val coroutineScope = MainScope()
+                            coroutineScope.launch(Dispatchers.IO) {
+                                try {
+                                    Log.d("RivePreviewActivity", "开始解压文件")
+                                    val mediaFiles = unzipMedia(this@RivePreviewActivity, File(filePath))
+                                    Log.d("RivePreviewActivity", "解压完成，发现 ${mediaFiles.size} 个媒体文件")
                                     
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                } else if (isTempFile && isSaved) {
-                                    // 显示已保存状态的按钮
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(40.dp)
-                                            .clip(CircleShape)
-                                            .background(Color.Gray),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        BasicText(
-                                            text = "已保存",
-                                            modifier = Modifier.padding(horizontal = 16.dp),
-                                            style = androidx.compose.ui.text.TextStyle(
-                                                color = Color.White,
-                                                fontSize = 14.sp
-                                            )
-                                        )
-                                    }
-                                    
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                }
-                                
-                                // 退出预览按钮
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(40.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFFE53935))
-                                        .clickable {
-                                            Log.d("DialogDebug", "Exit button clicked")
-                                            try {
-                                                showDialog.value = false
-                                                finish() // 退出预览
-                                                Log.d("DialogDebug", "Activity finished successfully")
-                                            } catch (e: Exception) {
-                                                Log.e("DialogDebug", "Error during exit", e)
+                                    if (mediaFiles.isNotEmpty()) {
+                                        withContext(Dispatchers.Main) {
+                                            Log.d("RivePreviewActivity", "准备启动媒体预览活动")
+                                            val newIntent = Intent(this@RivePreviewActivity, MediaPreviewActivity::class.java).apply {
+                                                putStringArrayListExtra("media_files", ArrayList(mediaFiles.map { it.file.absolutePath }))
+                                                putStringArrayListExtra("media_types", ArrayList(mediaFiles.map { it.type.name }))
+                                                putExtra("zip_file_path", filePath)
+                                                putExtra("is_saved_list", false)
+                                                // 添加标记以清除之前的实例
+                                                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP
                                             }
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    BasicText(
-                                        text = "退出预览",
-                                        modifier = Modifier.padding(horizontal = 16.dp),
-                                        style = androidx.compose.ui.text.TextStyle(
-                                            color = Color.White,
-                                            fontSize = 14.sp
-                                        )
-                                    )
+                                            Log.d("RivePreviewActivity", "即将启动媒体预览活动")
+                                            startActivity(newIntent)
+                                        }
+                                    } else {
+                                        withContext(Dispatchers.Main) {
+                                            Log.d("RivePreviewActivity", "未找到媒体文件，显示提示")
+                                            Toast.makeText(
+                                                this@RivePreviewActivity,
+                                                "解压失败或压缩包中无可用媒体文件",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("RivePreviewActivity", "处理新 ZIP 文件时出错", e)
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(
+                                            this@RivePreviewActivity,
+                                            "处理文件失败: ${e.message}",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
                                 }
                             }
                         }
                     }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(Unit) {
-                            awaitPointerEventScope {
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    // 只检测双指点击
-                                    if (event.changes.size == 2) {
-                                                    showDialog.value = true
-                                    }
-                                }
-                            }
-                        }
-                ) {
-                    // 将电池电量传递给 RivePlayerUI
-                    RivePlayerUI(
-                        file = File(filePath),
-                        batteryLevel = batteryLevel.collectAsState().value,
-                        onRiveViewCreated = { view -> riveView = view },
-                        eventListener = eventListener
-                    )
+                } catch (e: Exception) {
+                    Log.e("RivePreviewActivity", "处理新文件广播时出错", e)
                 }
             }
         }
     }
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        
+        try {
+            // 初始化振动器
+            vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vibratorManager.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(VIBRATOR_SERVICE) as Vibrator
+            }
+            
+            // 禁用滑动手势
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            )
+            
+            // 注册电池状态广播接收器
+            registerReceiver(
+                batteryReceiver,
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            )
+            
+            // 注册新文件广播接收器
+            val intentFilter = IntentFilter(ACTION_NEW_ADB_FILE)
+            registerReceiver(
+                newFileReceiver,
+                intentFilter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
+            
+            // 增加广播接收标记，便于调试
+            Log.d("RivePreviewActivity", "已注册广播接收器: ACTION_NEW_ADB_FILE")
+            
+            // 启用向上导航
+            actionBar?.setDisplayHomeAsUpEnabled(true)
+            
+            // 从 Intent 中获取文件路径和临时文件标记
+            val filePath = intent.getStringExtra("file_path") ?: return
+            val isTempFile = intent.getBooleanExtra("is_temp_file", false)
+            // 添加检查以确定文件是否为 ADB 传输的文件
+            val isExternalFile = isExternalStorageFile(filePath)
+            
+            Log.d("RivePreviewActivity", "File path: $filePath, isTempFile: $isTempFile, isExternalFile: $isExternalFile")
+            
+            setContent {
+                WatchViewTheme {
+                    // 使用 remember 来保持状态
+                    val showDialog = remember { mutableStateOf(false) }
+                    var isSaved by remember { mutableStateOf(false) }
+                    
+                    // 添加错误状态监听
+                    LaunchedEffect(errorCount) {
+                        if (errorCount >= maxErrorCount) {
+                            finish()
+                        }
+                    }
+                    
+                    if (showDialog.value) {
+                        Dialog(
+                            onDismissRequest = { 
+                                Log.d("DialogDebug", "Dialog dismissed by outside click")
+                                showDialog.value = false 
+                            },
+                            properties = DialogProperties(
+                                dismissOnBackPress = true,
+                                dismissOnClickOutside = true,
+                                securePolicy = SecureFlagPolicy.Inherit,
+                                usePlatformDefaultWidth = false
+                            )
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.9f))
+                                    .clickable { 
+                                        Log.d("DialogDebug", "Dialog background clicked")
+                                        showDialog.value = false 
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .padding(horizontal = 48.dp)
+                                        .clickable(enabled = false) {}, // 防止点击传递到背景
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    // 重新播放按钮
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(40.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF2196F3))
+                                            .clickable {
+                                                Log.d("DialogDebug", "Replay button clicked")
+                                                try {
+                                                    showDialog.value = false
+                                                    // 重新播放当前 Rive 文件
+                                                    riveView?.let {
+                                                        it.reset()
+                                                        it.play()
+                                                    }
+                                                    Log.d("DialogDebug", "Replay successful")
+                                                } catch (e: Exception) {
+                                                    Log.e("DialogDebug", "Error during replay", e)
+                                                }
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        BasicText(
+                                            text = "重新播放",
+                                            modifier = Modifier.padding(horizontal = 16.dp),
+                                            style = androidx.compose.ui.text.TextStyle(
+                                                color = Color.White,
+                                                fontSize = 14.sp
+                                            )
+                                        )
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    
+                                    // 保存文件按钮（显示条件更改为：临时文件或外部存储文件，且未保存）
+                                    if ((isTempFile || isExternalFile) && !isSaved) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(40.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF4CAF50))
+                                                .clickable {
+                                                    Log.d("DialogDebug", "Save button clicked")
+                                                    try {
+                                                        showDialog.value = false
+                                                        // 保存文件
+                                                        val tempFile = File(filePath)
+                                                        Log.d("SaveDebug", "Saving file from: ${tempFile.absolutePath}")
+                                                        
+                                                        val riveDir = File(this@RivePreviewActivity.filesDir, "saved_rive")
+                                                        if (!riveDir.exists()) {
+                                                            riveDir.mkdirs()
+                                                            Log.d("SaveDebug", "Created save directory: ${riveDir.absolutePath}")
+                                                        }
+                                                        
+                                                        // 获取原始文件名
+                                                        val originalName = tempFile.name
+                                                        val baseName = originalName.substringBeforeLast(".")
+                                                        val extension = originalName.substringAfterLast(".", "riv")
+                                                        
+                                                        // 生成不重复的文件名
+                                                        var index = 1
+                                                        var fileName = originalName
+                                                        var savedFile = File(riveDir.absolutePath, fileName)
+                                                        
+                                                        while (savedFile.exists()) {
+                                                            fileName = "${baseName}_${index}.${extension}"
+                                                            savedFile = File(riveDir.absolutePath, fileName)
+                                                            index++
+                                                        }
+                                                        
+                                                        // 复制文件
+                                                        tempFile.copyTo(savedFile, overwrite = true)
+                                                        Log.d("DialogDebug", "File saved successfully: ${savedFile.absolutePath}")
+                                                        
+                                                        // 显示保存成功提示
+                                                        android.widget.Toast.makeText(
+                                                            this@RivePreviewActivity,
+                                                            "已成功保存到本地",
+                                                            android.widget.Toast.LENGTH_SHORT
+                                                        ).show()
+                                                        
+                                                        // 更新保存状态
+                                                        isSaved = true
+                                                    } catch (e: Exception) {
+                                                        Log.e("DialogDebug", "Error during save", e)
+                                                    }
+                                                },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            BasicText(
+                                                text = "保存文件",
+                                                modifier = Modifier.padding(horizontal = 16.dp),
+                                                style = androidx.compose.ui.text.TextStyle(
+                                                    color = Color.White,
+                                                    fontSize = 14.sp
+                                                )
+                                            )
+                                        }
+                                        
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                    } else if ((isTempFile || isExternalFile) && isSaved) {
+                                        // 显示已保存状态的按钮
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(40.dp)
+                                                .clip(CircleShape)
+                                                .background(Color.Gray),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            BasicText(
+                                                text = "已保存",
+                                                modifier = Modifier.padding(horizontal = 16.dp),
+                                                style = androidx.compose.ui.text.TextStyle(
+                                                    color = Color.White,
+                                                    fontSize = 14.sp
+                                                )
+                                            )
+                                        }
+                                        
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                    }
+                                    
+                                    // 退出预览按钮
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(40.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFE53935))
+                                            .clickable {
+                                                Log.d("DialogDebug", "Exit button clicked")
+                                                try {
+                                                    showDialog.value = false
+                                                    finish() // 退出预览
+                                                    Log.d("DialogDebug", "Activity finished successfully")
+                                                } catch (e: Exception) {
+                                                    Log.e("DialogDebug", "Error during exit", e)
+                                                }
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        BasicText(
+                                            text = "退出预览",
+                                            modifier = Modifier.padding(horizontal = 16.dp),
+                                            style = androidx.compose.ui.text.TextStyle(
+                                                color = Color.White,
+                                                fontSize = 14.sp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(Unit) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        // 检测双指按下事件 (与 MediaPreviewActivity 保持一致)
+                                        if (event.type == androidx.compose.ui.input.pointer.PointerEventType.Press && event.changes.size >= 2) {
+                                            Log.d("GestureDebug", "Double finger press detected in RivePreviewActivity")
+                                            showDialog.value = true
+                                            // 消费掉事件，防止其他处理
+                                            event.changes.forEach { it.consume() }
+                                        }
+                                    }
+                                }
+                            }
+                    ) {
+                        // 将电池电量传递给 RivePlayerUI
+                        RivePlayerUI(
+                            file = File(filePath),
+                            batteryLevel = batteryLevel.collectAsState().value,
+                            onRiveViewCreated = { view -> riveView = view },
+                            eventListener = eventListener
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("RivePreviewActivity", "Error in onCreate", e)
+            handleError(e)
+        }
+    }
+
     override fun onDestroy() {
-        super.onDestroy()
-        // 取消注册广播接收器
-        unregisterReceiver(batteryReceiver)
-        // 移除 Rive 事件监听器
-        riveView?.removeEventListener(eventListener)
+        try {
+            super.onDestroy()
+            // 取消所有协程
+            activityScope.cancel()
+            // 取消注册广播接收器
+            unregisterReceiver(batteryReceiver)
+            unregisterReceiver(newFileReceiver)
+            // 移除 Rive 事件监听器和停止动画
+            riveView?.let {
+                it.removeEventListener(eventListener)
+                it.stop()
+            }
+            riveView = null
+        } catch (e: Exception) {
+            Log.e("RivePreviewActivity", "Error in onDestroy", e)
+        }
     }
 
     override fun onBackPressed() {
@@ -402,133 +549,83 @@ fun RivePlayerUI(
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener
 ) {
-    // 现有的时间状态
     var currentHour by remember { mutableStateOf(Calendar.getInstance().get(Calendar.HOUR_OF_DAY).toFloat()) }
     var currentMinute by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MINUTE).toFloat()) }
     var currentSecond by remember { mutableStateOf(0f) }
     var currentBattery by remember { mutableStateOf(batteryLevel) }
-    
-    // 添加日期相关状态
-    var currentMonth by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH) + 1f) } // 月份从0开始，需要+1
+    var currentMonth by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH) + 1f) }
     var currentDay by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH).toFloat()) }
-    var currentWeek by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1f) } // 转换为0-6
+    var currentWeek by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1f) }
 
-    // 每小时更新日期相关状态
+    // 减少更新频率，使用单个协程管理所有更新
     LaunchedEffect(Unit) {
-        while (true) {
-            val calendar = Calendar.getInstance()
-            currentMonth = (calendar.get(Calendar.MONTH) + 1).toFloat()
-            currentDay = calendar.get(Calendar.DAY_OF_MONTH).toFloat()
-            currentWeek = (calendar.get(Calendar.DAY_OF_WEEK) - 1).toFloat() // 周日为1，转换为0
-            delay(60 * 60 * 1000L) // 1小时
-        }
-    }
-
-    // 每5分钟更新小时，保留1位小数
-    LaunchedEffect(Unit) {
-        while (true) {
-            val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-            val minute = Calendar.getInstance().get(Calendar.MINUTE)
-            currentHour = (hour + minute / 60f).round(1)
-            delay(5 * 60 * 1000L) // 5分钟
-        }
-    }
-    
-    // 每5秒更新分钟，保留1位小数
-    LaunchedEffect(Unit) {
-        while (true) {
-            val minute = Calendar.getInstance().get(Calendar.MINUTE)
-            val second = Calendar.getInstance().get(Calendar.SECOND)
-            currentMinute = (minute + second / 60f).round(1)
-            delay(5000L) // 5秒
-        }
-    }
-    
-    // 每0.1秒更新秒钟，保留2位小数
-    LaunchedEffect(Unit) {
-        while (true) {
-            val second = Calendar.getInstance().get(Calendar.SECOND)
-            val millis = Calendar.getInstance().get(Calendar.MILLISECOND)
-            currentSecond = (second + millis / 1000f).round(2)
-            delay(100L) // 0.1秒，每秒10次
-        }
-    }
-
-    // 添加电池更新的 LaunchedEffect
-    LaunchedEffect(batteryLevel) {
-        while (true) {
-            currentBattery = batteryLevel
-            delay(5 * 60 * 1000L) // 5分钟
+        while (isActive) { // 检查协程是否仍然活跃
+            try {
+                val calendar = Calendar.getInstance()
+                
+                // 更新所有时间相关状态
+                currentHour = (calendar.get(Calendar.HOUR_OF_DAY) + calendar.get(Calendar.MINUTE) / 60f).round(1)
+                currentMinute = (calendar.get(Calendar.MINUTE) + calendar.get(Calendar.SECOND) / 60f).round(1)
+                currentSecond = (calendar.get(Calendar.SECOND) + calendar.get(Calendar.MILLISECOND) / 1000f).round(2)
+                currentMonth = (calendar.get(Calendar.MONTH) + 1).toFloat()
+                currentDay = calendar.get(Calendar.DAY_OF_MONTH).toFloat()
+                currentWeek = (calendar.get(Calendar.DAY_OF_WEEK) - 1).toFloat()
+                currentBattery = batteryLevel
+                
+                // 使用较长的延迟时间
+                delay(1000L) // 每秒更新一次
+            } catch (e: Exception) {
+                // 如果是取消异常，应该重新抛出以停止协程
+                if (e is CancellationException) throw e
+                Log.e("RivePlayerUI", "Error updating time", e)
+            }
         }
     }
 
     AndroidView(
         factory = { context ->
-            RiveAnimationView(context).apply {
-                val riveFile = RiveCoreFile(file.readBytes())
-                setRiveFile(riveFile)
-                autoplay = true
-                // 添加事件监听器
-                addEventListener(eventListener)
-                onRiveViewCreated(this)
-
-                val artboard = riveFile.firstArtboard
+            try {
+                RiveAnimationView(context).apply {
+                    val riveFile = RiveCoreFile(file.readBytes())
+                    setRiveFile(riveFile)
+                    autoplay = true
+                    addEventListener(eventListener)
+                    onRiveViewCreated(this)
+                }
+            } catch (e: Exception) {
+                Log.e("RivePlayerUI", "Error creating RiveAnimationView", e)
+                throw e
+            }
+        },
+        update = { riveView ->
+            try {
+                val artboard = riveView.file?.firstArtboard
                 val smNames = artboard?.stateMachineNames ?: emptyList()
                 
                 if (smNames.isNotEmpty()) {
                     val firstMachineName = smNames[0]
-                    val firstMachine = artboard?.stateMachine(firstMachineName)
                     
-                    // 安全地设置输入值
                     fun safeSetNumberState(inputName: String, value: Float) {
                         try {
+                            val firstMachine = artboard?.stateMachine(firstMachineName)
                             if (firstMachine?.inputs?.any { it.name == inputName } == true) {
-                                this@apply.setNumberState(firstMachineName, inputName, value)
+                                riveView.setNumberState(firstMachineName, inputName, value)
                             }
                         } catch (e: Exception) {
-                            e.printStackTrace()
+                            Log.e("RivePlayerUI", "Error setting state: $inputName = $value", e)
                         }
                     }
 
-                    // 初始化所有可能的输入值
                     safeSetNumberState("timeHour", currentHour)
                     safeSetNumberState("timeMinute", currentMinute)
                     safeSetNumberState("timeSecond", currentSecond)
                     safeSetNumberState("systemStatusBattery", currentBattery)
-                    // 添加日期相关输入
                     safeSetNumberState("dateMonth", currentMonth)
                     safeSetNumberState("dateDay", currentDay)
                     safeSetNumberState("dateWeek", currentWeek)
                 }
-            }
-        },
-        update = { riveView ->
-            val artboard = riveView.file?.firstArtboard
-            val smNames = artboard?.stateMachineNames ?: emptyList()
-            
-            if (smNames.isNotEmpty()) {
-                val firstMachineName = smNames[0]
-                
-                fun safeSetNumberState(inputName: String, value: Float) {
-                    try {
-                        val firstMachine = artboard?.stateMachine(firstMachineName)
-                        if (firstMachine?.inputs?.any { it.name == inputName } == true) {
-                            riveView.setNumberState(firstMachineName, inputName, value)
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-
-                // 更新所有可能的输入值
-                safeSetNumberState("timeHour", currentHour)
-                safeSetNumberState("timeMinute", currentMinute)
-                safeSetNumberState("timeSecond", currentSecond)
-                safeSetNumberState("systemStatusBattery", currentBattery)
-                // 添加日期相关输入的更新
-                safeSetNumberState("dateMonth", currentMonth)
-                safeSetNumberState("dateDay", currentDay)
-                safeSetNumberState("dateWeek", currentWeek)
+            } catch (e: Exception) {
+                Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
             }
         },
         modifier = Modifier.fillMaxSize()
@@ -540,4 +637,23 @@ private fun Float.round(decimals: Int): Float {
     var multiplier = 1.0f
     repeat(decimals) { multiplier *= 10 }
     return kotlin.math.round(this * multiplier) / multiplier
+}
+
+// 添加函数检查文件是否在外部存储中
+private fun isExternalStorageFile(filePath: String): Boolean {
+    return try {
+        // 检查路径是否包含外部存储目录的特征
+        val file = File(filePath)
+        val canonicalPath = file.canonicalPath
+        
+        // 检查路径是否包含外部存储的特征目录名
+        canonicalPath.contains("/storage/emulated/0/Android/data") ||
+        canonicalPath.contains("/sdcard/Android/data") ||
+        canonicalPath.contains("/mnt/sdcard/Android/data") ||
+        // 适配 Android 设备的外部存储路径模式
+        file.absolutePath.startsWith(Environment.getExternalStorageDirectory().absolutePath)
+    } catch (e: Exception) {
+        Log.e("RivePreviewActivity", "Error checking external storage path", e)
+        false
+    }
 } 
