@@ -45,6 +45,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import app.rive.runtime.kotlin.core.File as RiveCoreFile
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 
 // 添加广播常量
 const val ACTION_NEW_ADB_FILE = "com.example.watchview.NEW_ADB_FILE"
@@ -88,6 +91,9 @@ fun DownloadScreen(
     var isDownloading by remember { mutableStateOf(false) }
     // 添加状态来控制"有线传输"按钮的可用性
     var isOpeningLocalFile by remember { mutableStateOf(false) }
+    // 添加状态控制顶部通知栏
+    var showTopNotification by remember { mutableStateOf(false) }
+    var topNotificationMessage by remember { mutableStateOf("") }
 
     // 添加一个协程作用域来控制扫描任务
     val scanJob = remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
@@ -194,17 +200,14 @@ fun DownloadScreen(
             
             // 如果是新文件，显示提示并发送广播
             if (hasLocalFile && isNewFile) {
-                val fileName = File(localFilePath).name
-                val fileTypeStr = when (localFileType) {
-                    DownloadType.RIVE -> "Rive动画"
-                    DownloadType.ZIP -> "媒体压缩包"
-                    else -> "未知文件"
+                // 不再使用 Toast，而是更新状态显示顶部通知栏
+                topNotificationMessage = "收到新文件"
+                showTopNotification = true
+                // 启动一个协程，在短暂延迟后隐藏通知栏
+                coroutineScope.launch {
+                    delay(2500) // 显示 2.5 秒
+                    showTopNotification = false
                 }
-                Toast.makeText(
-                    context,
-                    "收到新文件: $fileName ($fileTypeStr)",
-                    Toast.LENGTH_SHORT
-                ).show()
                 
                 // 发送广播通知当前可能正在运行的预览活动
                 if (file != null && type != null) {
@@ -626,6 +629,28 @@ fun DownloadScreen(
                             fontSize = 8.sp                  // 状态文本大小
                         )
                     }
+                }
+            }
+
+            // 顶部通知栏 (覆盖在其他内容之上)
+            AnimatedVisibility(
+                visible = showTopNotification,
+                modifier = Modifier.align(Alignment.TopCenter),
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = topNotificationMessage,
+                        color = Color(0xFF4CAF50),
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }
