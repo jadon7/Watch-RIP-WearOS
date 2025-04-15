@@ -2,6 +2,8 @@ package com.example.watchview.presentation.ui
 
 import android.content.Context
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
 import android.os.Environment
 import android.util.Log
 import android.widget.Toast
@@ -54,6 +56,9 @@ const val ACTION_NEW_ADB_FILE = "com.example.watchview.NEW_ADB_FILE"
 const val EXTRA_FILE_PATH = "file_path"
 const val EXTRA_FILE_TYPE = "file_type"
 
+// 添加新的广播常量
+const val ACTION_TRIGGER_WIRED_PREVIEW = "com.example.watchview.TRIGGER_WIRED_PREVIEW"
+
 /**
  * 下载屏幕组件
  */
@@ -97,11 +102,36 @@ fun DownloadScreen(
 
     // 添加一个协程作用域来控制扫描任务
     val scanJob = remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    
+    // 添加状态以触发自动打开文件
+    var shouldAutoOpenFileAfterRefresh by remember { mutableStateOf(false) }
 
     // 监听 ipAddress 的变化
     LaunchedEffect(ipAddress) {
         if (ipAddress.isNotEmpty()) {
             onIpAddressChange(ipAddress)
+        }
+    }
+    
+    // 注册广播接收器以监听预览关闭后的触发信号
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == ACTION_TRIGGER_WIRED_PREVIEW) {
+                    Log.d("WiredTrigger", "收到 ACTION_TRIGGER_WIRED_PREVIEW 广播，触发刷新")
+                    // 设置标记以在刷新后自动打开文件
+                    shouldAutoOpenFileAfterRefresh = true
+                }
+            }
+        }
+        val filter = IntentFilter(ACTION_TRIGGER_WIRED_PREVIEW)
+        // 使用 context.registerReceiver 注册
+        context.registerReceiver(receiver, filter)
+        
+        // 在 DisposableEffect 销毁时注销接收器
+        onDispose {
+            Log.d("WiredTrigger", "注销 ACTION_TRIGGER_WIRED_PREVIEW 广播接收器")
+            context.unregisterReceiver(receiver)
         }
     }
     
@@ -198,8 +228,49 @@ fun DownloadScreen(
             localFilePath = file?.absolutePath ?: ""
             localFileType = type
             
-            // 如果是新文件，显示提示并发送广播
-            if (hasLocalFile && isNewFile) {
+            // --- 修改后的逻辑：检查是否需要自动打开文件 (忽略 isNewFile)，并添加重试 --- 
+            if (shouldAutoOpenFileAfterRefresh) {
+                if (hasLocalFile) {
+                    // 初始检查成功找到文件
+                    Log.d("AutoOpenFile", "初始检查找到文件 (isNewFile=$isNewFile)，调用 handleOpenLocalFile")
+                    handleOpenLocalFile()
+                    shouldAutoOpenFileAfterRefresh = false // 重置标记
+                } else {
+                    // 初始检查未找到文件，开始重试
+                    Log.d("AutoOpenFile", "初始检查未找到文件，开始重试 (最多3秒, 0.2s/次)")
+                    var retrySuccess = false
+                    for (retryAttempt in 1..15) {
+                        delay(200)
+                        Log.d("AutoOpenFile", "重试检查 #${retryAttempt}")
+                        // 在重试时，我们仍然需要比较 isNewFile，以避免重复打开完全相同的文件
+                        // 但初始触发不再需要检查 isNewFile
+                        val (retryFile, retryType, retryIsNewFile) = checkLocalFile(context, localFilePath)
+                        
+                        if (retryFile != null) {
+                            Log.d("AutoOpenFile", "重试成功找到文件: ${retryFile.absolutePath} (isNewFile=$retryIsNewFile)")
+                            // 更新状态以反映新找到的文件
+                            hasLocalFile = true
+                            localFilePath = retryFile.absolutePath
+                            localFileType = retryType
+                            // 打开文件
+                            handleOpenLocalFile()
+                            shouldAutoOpenFileAfterRefresh = false // 重置标记
+                            retrySuccess = true
+                            break // 成功，跳出重试循环
+                        }
+                    }
+                    if (!retrySuccess) {
+                        Log.w("AutoOpenFile", "重试3秒后仍未找到新文件，放弃自动打开")
+                        shouldAutoOpenFileAfterRefresh = false // 重试超时，重置标记
+                    }
+                }
+            }
+            // --- 结束修改后的逻辑 --- 
+            
+            // 如果是新文件，显示提示并发送广播 (这部分逻辑保持不变，仅在非自动打开流程或需要时执行)
+            // Ensure this only runs if it wasn't handled by the auto-open logic above OR if auto-open wasn't requested
+            if (!shouldAutoOpenFileAfterRefresh && hasLocalFile && isNewFile) {
+                Log.d("LocalFileNotify", "显示新文件通知并发送广播 (isNewFile=$isNewFile, shouldAutoOpen=$shouldAutoOpenFileAfterRefresh)")
                 // 不再使用 Toast，而是更新状态显示顶部通知栏
                 topNotificationMessage = "收到新文件"
                 showTopNotification = true
@@ -225,8 +296,13 @@ fun DownloadScreen(
             // 5秒后再次检查
             kotlinx.coroutines.delay(5000)
             refreshTrigger = (refreshTrigger + 1) % 1000 // 避免数值过大
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            Log.w("LocalFile", "LaunchedEffect 在 checkLocalFile 期间被取消 (可能是 Composition 变化)。将在下次触发时重试。", e)
+            // 不重置 shouldAutoOpenFileAfterRefresh，让下一次成功的运行来处理
         } catch (e: Exception) {
             Log.e("LocalFile", "检查本地文件出错: ${e.message}", e)
+            // 出错时也考虑重置标记，防止意外触发
+            shouldAutoOpenFileAfterRefresh = false
             // 5秒后重试
             kotlinx.coroutines.delay(5000)
             refreshTrigger = (refreshTrigger + 1) % 1000

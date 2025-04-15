@@ -1,0 +1,10 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+
+# Your rule content
+
+- 完成文件修改后尝试自己编译来排查错误，编译出现问题就继续优化调整
+

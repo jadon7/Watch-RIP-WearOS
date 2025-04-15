@@ -68,6 +68,11 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 
 class MediaPreviewActivity : ComponentActivity() {
     private lateinit var wearableRecyclerView: WearableRecyclerView
@@ -109,101 +114,21 @@ class MediaPreviewActivity : ComponentActivity() {
     private val newFileReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             Log.d("MediaPreviewActivity", "收到广播: ${intent.action}")
-            
-            if (intent.action == ACTION_NEW_ADB_FILE) {
-                Log.d("MediaPreviewActivity", "确认收到 ACTION_NEW_ADB_FILE 广播")
-                
-                val filePath = intent.getStringExtra(EXTRA_FILE_PATH)
-                val fileTypeName = intent.getStringExtra(EXTRA_FILE_TYPE)
-                
-                Log.d("MediaPreviewActivity", "广播内容: filePath=$filePath, fileTypeName=$fileTypeName")
-                
-                if (filePath == null || fileTypeName == null) {
-                    Log.e("MediaPreviewActivity", "广播缺少必要参数，无法处理")
-                    return
-                }
-                
-                try {
-                    val fileType = DownloadType.valueOf(fileTypeName)
-                    Log.d("MediaPreviewActivity", "文件类型解析成功: $fileType")
-                    
-                    // 根据文件类型处理不同的情况
-                    when (fileType) {
-                        DownloadType.ZIP -> {
-                            // 如果是 ZIP 文件，重新启动媒体预览活动
-                            Log.d("MediaPreviewActivity", "收到新的 ZIP 文件广播: $filePath")
-                            Log.d("MediaPreviewActivity", "准备关闭当前活动并解压新 ZIP 文件")
-                            
-                            releaseAllPlayers() // 切换前释放所有播放器
-                            finish()
-                            
-                            // 启动新的预览活动
-                            // 这里需要先解压文件
-                            Log.d("MediaPreviewActivity", "启动协程进行解压")
-                            coroutineScope.launch(Dispatchers.IO) {
-                                try {
-                                    Log.d("MediaPreviewActivity", "开始解压文件")
-                                    val mediaFiles = unzipMedia(this@MediaPreviewActivity, File(filePath))
-                                    Log.d("MediaPreviewActivity", "解压完成，发现 ${mediaFiles.size} 个媒体文件")
-                                    
-                                    if (mediaFiles.isNotEmpty()) {
-                                        withContext(Dispatchers.Main) {
-                                            Log.d("MediaPreviewActivity", "准备启动新的媒体预览活动")
-                                            val newIntent = Intent(this@MediaPreviewActivity, MediaPreviewActivity::class.java).apply {
-                                                putStringArrayListExtra("media_files", ArrayList(mediaFiles.map { it.file.absolutePath }))
-                                                putStringArrayListExtra("media_types", ArrayList(mediaFiles.map { it.type.name }))
-                                                putExtra("zip_file_path", filePath)
-                                                putExtra("is_saved_list", false)
-                                                // 添加标记以清除之前的实例并创建新任务
-                                                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
-                                            }
-                                            Log.d("MediaPreviewActivity", "即将启动新的媒体预览活动")
-                                            startActivity(newIntent)
-                                        }
-                                    } else {
-                                        withContext(Dispatchers.Main) {
-                                            Log.d("MediaPreviewActivity", "未找到媒体文件，显示提示")
-                                            Toast.makeText(
-                                                this@MediaPreviewActivity,
-                                                "解压失败或压缩包中无可用媒体文件",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e("MediaPreviewActivity", "处理新文件时出错", e)
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(
-                                            this@MediaPreviewActivity,
-                                            "处理文件失败: ${e.message}",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
-                            }
-                        }
-                        DownloadType.RIVE -> {
-                            // 如果是 Rive 文件，则关闭当前活动并启动 Rive 预览活动
-                            Log.d("MediaPreviewActivity", "收到新的 Rive 文件广播，切换到 Rive 预览: $filePath")
-                            Log.d("MediaPreviewActivity", "准备关闭当前活动并启动 Rive 预览")
-                            
-                            releaseAllPlayers() // 切换前释放所有播放器
-                            finish()
-                            
-                            // 启动 Rive 预览活动
-                            val newIntent = Intent(this@MediaPreviewActivity, RivePreviewActivity::class.java).apply {
-                                putExtra("file_path", filePath)
-                                putExtra("is_temp_file", false)
-                                // 添加标记以清除之前的实例并创建新任务
-                                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
-                            }
-                            Log.d("MediaPreviewActivity", "即将启动 Rive 预览活动")
-                            startActivity(newIntent)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e("MediaPreviewActivity", "处理新文件广播时出错", e)
-                }
+            val actionToTake = intent.action // 保存 action
+
+            // 先完成关闭 Activity 的操作
+            Log.i("MediaPreviewActivity", "收到广播 ($actionToTake)，准备关闭当前预览...")
+            releaseAllPlayers() // 释放播放器资源
+            finish()
+
+            // 使用 CoroutineScope 在后台执行延迟和发送新广播
+            CoroutineScope(Dispatchers.Main).launch {
+                // 等待 Activity 真正关闭可能需要一点时间，延迟 1 秒确保 finish() 生效
+                // 并满足用户1秒后触发的需求
+                delay(1000L)
+                Log.d("MediaPreviewActivity", "延迟结束，发送 ACTION_TRIGGER_WIRED_PREVIEW 广播")
+                val triggerIntent = Intent(ACTION_TRIGGER_WIRED_PREVIEW)
+                context.sendBroadcast(triggerIntent)
             }
         }
     }
@@ -223,11 +148,11 @@ class MediaPreviewActivity : ComponentActivity() {
         // 将路径和类型转换为 MediaFile 列表，并按文件名排序
         val mediaList = mediaFiles.zip(mediaTypes)
             .map { (path, type) ->
-                MediaFile(
+            MediaFile(
                     file = File(path),
-                    type = MediaType.valueOf(type)
-                )
-            }
+                type = MediaType.valueOf(type)
+            )
+        }
             .sortedBy { mediaFile -> 
                 // 提取文件名中的数字部分进行排序
                 mediaFile.file.nameWithoutExtension.let { fileName ->
@@ -235,7 +160,7 @@ class MediaPreviewActivity : ComponentActivity() {
                     val numberMatch = Regex("\\d+").find(fileName)
                     numberMatch?.value?.toIntOrNull() ?: Int.MAX_VALUE
                 }
-            }
+        }
 
         // 创建并配置 WearableRecyclerView
         wearableRecyclerView = WearableRecyclerView(this).apply {
@@ -363,8 +288,8 @@ class MediaPreviewActivity : ComponentActivity() {
                                     players[currentPosition]?.playWhenReady = false
                                     Log.d("ExoPlayerControl", "Pausing player at old position: $currentPosition")
 
-                                    currentPosition = centerPosition
-
+                            currentPosition = centerPosition
+                            
                                     // 启动新的播放器
                                     players[currentPosition]?.let {
                                         it.playWhenReady = true
@@ -393,7 +318,7 @@ class MediaPreviewActivity : ComponentActivity() {
                             settlingPosition = RecyclerView.NO_POSITION // Reset settling state
                         }
                         RecyclerView.SCROLL_STATE_SETTLING -> {
-                             Log.d("ScrollDebug", "Scroll State: SETTLING")
+                            Log.d("ScrollDebug", "Scroll State: SETTLING")
                              // 在滚动动画期间也暂停所有播放器
                              pauseAllPlayers()
                              // Optional: Try to predict target position if needed, but pausing all is safer
@@ -584,16 +509,19 @@ class MediaPreviewActivity : ComponentActivity() {
             WindowManager.LayoutParams.FLAG_FULLSCREEN
         )
         
-        // 注册新文件广播接收器
-        val intentFilter = IntentFilter(ACTION_NEW_ADB_FILE)
+        // 注册新文件广播接收器，监听两个 Action
+        val intentFilter = IntentFilter().apply {
+            addAction(ACTION_NEW_ADB_FILE)
+            addAction("com.example.watchview.CLOSE_PREVIEW")
+        }
         registerReceiver(
             newFileReceiver,
             intentFilter,
-            Context.RECEIVER_NOT_EXPORTED
+            Context.RECEIVER_NOT_EXPORTED // 这个 Receiver 只接收来自应用内部的广播，不需要导出
         )
         
         // 增加广播接收标记，便于调试
-        Log.d("MediaPreviewActivity", "已注册广播接收器: ACTION_NEW_ADB_FILE")
+        Log.d("MediaPreviewActivity", "已注册广播接收器: ACTION_NEW_ADB_FILE, com.example.watchview.CLOSE_PREVIEW")
     }
 
     override fun onResume() {

@@ -13,7 +13,7 @@ android {
         minSdk = 30                             // 最低支持的 Android 版本 (WearOS)
         targetSdk = 34                          // 目标 Android 版本
         versionCode = 2                         // 应用版本号
-        versionName = "2.1.2"                     // 应用版本名称
+        versionName = "2.3.0"                     // 应用版本名称
         vectorDrawables {
             useSupportLibrary = true            // 启用矢量图支持
         }
