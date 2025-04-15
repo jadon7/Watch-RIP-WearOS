@@ -54,6 +54,11 @@ import com.example.watchview.presentation.ui.ACTION_NEW_ADB_FILE
 import com.example.watchview.presentation.ui.EXTRA_FILE_PATH
 import com.example.watchview.presentation.ui.EXTRA_FILE_TYPE
 import com.example.watchview.utils.unzipMedia
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
@@ -133,100 +138,20 @@ class RivePreviewActivity : ComponentActivity() {
     private val newFileReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             Log.d("RivePreviewActivity", "收到广播: ${intent.action}")
-            
-            if (intent.action == ACTION_NEW_ADB_FILE) {
-                Log.d("RivePreviewActivity", "确认收到 ACTION_NEW_ADB_FILE 广播")
-                
-                val filePath = intent.getStringExtra(EXTRA_FILE_PATH)
-                val fileTypeName = intent.getStringExtra(EXTRA_FILE_TYPE)
-                
-                Log.d("RivePreviewActivity", "广播内容: filePath=$filePath, fileTypeName=$fileTypeName")
-                
-                if (filePath == null || fileTypeName == null) {
-                    Log.e("RivePreviewActivity", "广播缺少必要参数，无法处理")
-                    return
-                }
-                
-                try {
-                    val fileType = DownloadType.valueOf(fileTypeName)
-                    Log.d("RivePreviewActivity", "文件类型解析成功: $fileType")
-                    
-                    // 根据文件类型处理不同的情况
-                    when (fileType) {
-                        DownloadType.RIVE -> {
-                            // 如果是 Rive 文件，重新启动 Rive 预览活动
-                            Log.d("RivePreviewActivity", "收到新的 Rive 文件广播: $filePath")
-                            Log.d("RivePreviewActivity", "准备关闭当前活动并启动新的 Rive 预览")
-                            
-                            // 关闭当前活动，然后启动新的预览活动
-                            val newIntent = Intent(this@RivePreviewActivity, RivePreviewActivity::class.java).apply {
-                                putExtra("file_path", filePath)
-                                putExtra("is_temp_file", false)
-                                // 添加标记以清除之前的实例
-                                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            }
-                            Log.d("RivePreviewActivity", "即将启动新的 Rive 预览活动")
-                            startActivity(newIntent)
-                            Log.d("RivePreviewActivity", "即将结束当前 Rive 预览活动")
-                            finish()
-                        }
-                        DownloadType.ZIP -> {
-                            // 如果是 ZIP 文件，需要关闭当前活动，解压并启动媒体预览活动
-                            Log.d("RivePreviewActivity", "收到新的 ZIP 文件广播，切换到媒体预览: $filePath")
-                            
-                            // 关闭当前活动
-                            Log.d("RivePreviewActivity", "准备关闭当前活动")
-                            finish()
-                            
-                            // 启动协程进行解压和预览
-                            Log.d("RivePreviewActivity", "启动协程进行解压")
-                            val coroutineScope = MainScope()
-                            coroutineScope.launch(Dispatchers.IO) {
-                                try {
-                                    Log.d("RivePreviewActivity", "开始解压文件")
-                                    val mediaFiles = unzipMedia(this@RivePreviewActivity, File(filePath))
-                                    Log.d("RivePreviewActivity", "解压完成，发现 ${mediaFiles.size} 个媒体文件")
-                                    
-                                    if (mediaFiles.isNotEmpty()) {
-                                        withContext(Dispatchers.Main) {
-                                            Log.d("RivePreviewActivity", "准备启动媒体预览活动")
-                                            val newIntent = Intent(this@RivePreviewActivity, MediaPreviewActivity::class.java).apply {
-                                                putStringArrayListExtra("media_files", ArrayList(mediaFiles.map { it.file.absolutePath }))
-                                                putStringArrayListExtra("media_types", ArrayList(mediaFiles.map { it.type.name }))
-                                                putExtra("zip_file_path", filePath)
-                                                putExtra("is_saved_list", false)
-                                                // 添加标记以清除之前的实例
-                                                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP
-                                            }
-                                            Log.d("RivePreviewActivity", "即将启动媒体预览活动")
-                                            startActivity(newIntent)
-                                        }
-                                    } else {
-                                        withContext(Dispatchers.Main) {
-                                            Log.d("RivePreviewActivity", "未找到媒体文件，显示提示")
-                                            Toast.makeText(
-                                                this@RivePreviewActivity,
-                                                "解压失败或压缩包中无可用媒体文件",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e("RivePreviewActivity", "处理新 ZIP 文件时出错", e)
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(
-                                            this@RivePreviewActivity,
-                                            "处理文件失败: ${e.message}",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e("RivePreviewActivity", "处理新文件广播时出错", e)
-                }
+            val actionToTake = intent.action // 保存 action
+
+            // 先完成关闭 Activity 的操作
+            Log.i("RivePreviewActivity", "收到广播 ($actionToTake)，准备关闭当前预览...")
+            finish()
+
+            // 使用 CoroutineScope 在后台执行延迟和发送新广播
+            CoroutineScope(Dispatchers.Main).launch {
+                 // 等待 Activity 真正关闭可能需要一点时间，延迟 1 秒确保 finish() 生效
+                 // 并满足用户1秒后触发的需求
+                delay(1000L)
+                Log.d("RivePreviewActivity", "延迟结束，发送 ACTION_TRIGGER_WIRED_PREVIEW 广播")
+                val triggerIntent = Intent(ACTION_TRIGGER_WIRED_PREVIEW)
+                context.sendBroadcast(triggerIntent)
             }
         }
     }
@@ -260,16 +185,19 @@ class RivePreviewActivity : ComponentActivity() {
                 IntentFilter(Intent.ACTION_BATTERY_CHANGED)
             )
             
-            // 注册新文件广播接收器
-            val intentFilter = IntentFilter(ACTION_NEW_ADB_FILE)
+            // 注册广播接收器，监听两个 Action
+            val intentFilter = IntentFilter().apply {
+                addAction(ACTION_NEW_ADB_FILE)
+                addAction("com.example.watchview.CLOSE_PREVIEW")
+            }
             registerReceiver(
                 newFileReceiver,
                 intentFilter,
-                Context.RECEIVER_NOT_EXPORTED
+                Context.RECEIVER_NOT_EXPORTED // 这个 Receiver 只接收来自应用内部的广播，不需要导出
             )
             
             // 增加广播接收标记，便于调试
-            Log.d("RivePreviewActivity", "已注册广播接收器: ACTION_NEW_ADB_FILE")
+            Log.d("RivePreviewActivity", "已注册广播接收器: ACTION_NEW_ADB_FILE, com.example.watchview.CLOSE_PREVIEW")
             
             // 启用向上导航
             actionBar?.setDisplayHomeAsUpEnabled(true)

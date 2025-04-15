@@ -20,6 +20,12 @@ import android.net.NetworkCapabilities
 import com.example.watchview.presentation.theme.WatchViewTheme
 import com.example.watchview.presentation.ui.DownloadScreen
 import com.example.watchview.utils.PreferencesManager
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
+import android.util.Log
+import android.widget.Toast
+import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 
 /**
  * 主 Activity
@@ -27,6 +33,43 @@ import com.example.watchview.utils.PreferencesManager
 class MainActivity : ComponentActivity() {
     private var isWifiConnected by mutableStateOf(false)
     private lateinit var preferencesManager: PreferencesManager
+
+    // 定义广播 Action 常量
+    private val OPEN_FILE_ACTION = "com.example.watchview.OPEN_FILE"
+    private val CLOSE_PREVIEW_ACTION = "com.example.watchview.CLOSE_PREVIEW"
+
+    // 创建广播接收器实例
+    private val openFileReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            Log.d("MainActivityReceiver", "Received broadcast: ${intent?.action}")
+            if (intent?.action == OPEN_FILE_ACTION && context != null) {
+                Log.i("MainActivityReceiver", "Received $OPEN_FILE_ACTION broadcast.")
+                val message = intent.getStringExtra("message") // 获取包含文件名的 message
+                Log.d("MainActivityReceiver", "Broadcast message (filename): $message")
+                
+                // 1. 移除 Toast 显示
+                // val toastMessage = message ?: "收到广播 (无文件名)"
+                // Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
+                // Log.i("MainActivityReceiver", "Displayed Toast: '$toastMessage'")
+
+                // 2. 发送关闭预览的广播命令
+                Log.d("MainActivityReceiver", "Sending $CLOSE_PREVIEW_ACTION broadcast to close previews.")
+                val closeIntent = Intent(CLOSE_PREVIEW_ACTION).apply {
+                    setPackage(context.packageName)
+                }
+                context.sendBroadcast(closeIntent)
+                
+                // 3. 延迟后发送触发有线预览检查的广播
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    Log.d("MainActivityReceiver", "Sending ACTION_TRIGGER_WIRED_PREVIEW broadcast after delay.")
+                    val triggerIntent = Intent(ACTION_TRIGGER_WIRED_PREVIEW).apply {
+                        setPackage(context.packageName)
+                    }
+                    context.sendBroadcast(triggerIntent)
+                }, 500) // 延迟 500ms
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()  // 显示启动画面
@@ -54,6 +97,11 @@ class MainActivity : ComponentActivity() {
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
         // ---------------------------------------------------------------
 
+        // 注册广播接收器
+        val intentFilter = IntentFilter(OPEN_FILE_ACTION)
+        registerReceiver(openFileReceiver, intentFilter, Context.RECEIVER_EXPORTED)
+        Log.i("MainActivity", "Registered openFileReceiver for action $OPEN_FILE_ACTION (exported)")
+
         setContent {
             WatchViewTheme {
                 DownloadScreen(
@@ -65,5 +113,12 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // 取消注册广播接收器
+        unregisterReceiver(openFileReceiver)
+        Log.i("MainActivity", "Unregistered openFileReceiver")
     }
 }
