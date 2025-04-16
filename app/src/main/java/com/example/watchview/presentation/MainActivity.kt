@@ -27,6 +27,9 @@ import android.util.Log
 import android.widget.Toast
 import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 
+// 添加 Extra 常量
+const val EXTRA_TRIGGER_TIMESTAMP = "trigger_timestamp"
+
 /**
  * 主 Activity
  */
@@ -52,21 +55,23 @@ class MainActivity : ComponentActivity() {
                 // Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
                 // Log.i("MainActivityReceiver", "Displayed Toast: '$toastMessage'")
 
-                // 2. 发送关闭预览的广播命令
-                Log.d("MainActivityReceiver", "Sending $CLOSE_PREVIEW_ACTION broadcast to close previews.")
-                val closeIntent = Intent(CLOSE_PREVIEW_ACTION).apply {
-                    setPackage(context.packageName)
-                }
-                context.sendBroadcast(closeIntent)
+                // 2. 移除发送关闭预览的广播命令
+                // Log.d("MainActivityReceiver", "Sending $CLOSE_PREVIEW_ACTION broadcast to close previews.")
+                // val closeIntent = Intent(CLOSE_PREVIEW_ACTION).apply {
+                //     setPackage(context.packageName)
+                // }
+                // context.sendBroadcast(closeIntent)
                 
-                // 3. 延迟后发送触发有线预览检查的广播
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    Log.d("MainActivityReceiver", "Sending ACTION_TRIGGER_WIRED_PREVIEW broadcast after delay.")
-                    val triggerIntent = Intent(ACTION_TRIGGER_WIRED_PREVIEW).apply {
-                        setPackage(context.packageName)
-                    }
-                    context.sendBroadcast(triggerIntent)
-                }, 500) // 延迟 500ms
+                // 3. 移除延迟，立即发送触发有线预览检查的广播
+                // android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                Log.d("MainActivityReceiver", "Sending ACTION_TRIGGER_WIRED_PREVIEW broadcast immediately.")
+                val triggerTime = System.currentTimeMillis() // <-- 记录发送时间
+                val triggerIntent = Intent(ACTION_TRIGGER_WIRED_PREVIEW).apply {
+                    setPackage(context.packageName)
+                    putExtra(EXTRA_TRIGGER_TIMESTAMP, triggerTime) // <-- 添加时间戳到 Extra
+                }
+                context.sendBroadcast(triggerIntent)
+                //}, 500) // 移除延迟
             }
         }
     }

@@ -6,12 +6,12 @@
     <description>手表APP</description>
     <language>zh-CN</language>
     <item>
-      <title>版本 2.3.0</title>
-      <watchrip:versionName>2.3.0</watchrip:versionName>
-      <pubDate>Sun, 15 Apr 2025 18:27:00 +0800</pubDate>
-      <enclosure url="https://github.com/jadon7/Watch-RIP-WearOS/releases/download/v2.3.0/watch.rip.2.3.0.apk"
+      <title>版本 2.3.1</title>
+      <watchrip:versionName>2.3.1</watchrip:versionName>
+      <pubDate>Sun, 16 Apr 2025 18:27:00 +0800</pubDate>
+      <enclosure url="https://github.com/jadon7/Watch-RIP-WearOS/releases/download/v2.3.1/watch.rip.apk"
                  type="application/vnd.android.package-archive"
-                 length="62316963" />
+                 length="62326496" />
     </item>
   </channel>
 </rss> 

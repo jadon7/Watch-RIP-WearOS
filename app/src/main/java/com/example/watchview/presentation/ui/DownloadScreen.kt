@@ -50,6 +50,7 @@ import app.rive.runtime.kotlin.core.File as RiveCoreFile
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import com.example.watchview.presentation.EXTRA_TRIGGER_TIMESTAMP
 
 // 添加广播常量
 const val ACTION_NEW_ADB_FILE = "com.example.watchview.NEW_ADB_FILE"
@@ -58,6 +59,9 @@ const val EXTRA_FILE_TYPE = "file_type"
 
 // 添加新的广播常量
 const val ACTION_TRIGGER_WIRED_PREVIEW = "com.example.watchview.TRIGGER_WIRED_PREVIEW"
+
+// 添加新的关闭广播常量
+const val ACTION_CLOSE_PREVIOUS_PREVIEW = "com.example.watchview.CLOSE_PREVIOUS_PREVIEW"
 
 /**
  * 下载屏幕组件
@@ -105,6 +109,8 @@ fun DownloadScreen(
     
     // 添加状态以触发自动打开文件
     var shouldAutoOpenFileAfterRefresh by remember { mutableStateOf(false) }
+    // 添加状态以保存触发时间戳
+    var triggerTimestamp by remember { mutableStateOf(0L) }
 
     // 监听 ipAddress 的变化
     LaunchedEffect(ipAddress) {
@@ -118,15 +124,23 @@ fun DownloadScreen(
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == ACTION_TRIGGER_WIRED_PREVIEW) {
+                    val receivedTime = System.currentTimeMillis()
+                    val intentTriggerTime = intent.getLongExtra(EXTRA_TRIGGER_TIMESTAMP, receivedTime) // 获取发送时间
+                    triggerTimestamp = intentTriggerTime // 保存时间戳状态
+                    Log.d("TimingLog", "-- Timing Start --")
+                    Log.d("TimingLog", "[A] Broadcast Send to Receive duration: ${receivedTime - intentTriggerTime}ms")
+                    
                     Log.d("WiredTrigger", "收到 ACTION_TRIGGER_WIRED_PREVIEW 广播，触发刷新")
                     // 设置标记以在刷新后自动打开文件
                     shouldAutoOpenFileAfterRefresh = true
+                    // 增加 refreshTrigger 来重新运行 LaunchedEffect
+                    refreshTrigger = (refreshTrigger + 1) % 1000
                 }
             }
         }
         val filter = IntentFilter(ACTION_TRIGGER_WIRED_PREVIEW)
-        // 使用 context.registerReceiver 注册
-        context.registerReceiver(receiver, filter)
+        // 使用 context.registerReceiver 注册，并添加 flag
+        context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         
         // 在 DisposableEffect 销毁时注销接收器
         onDispose {
@@ -218,81 +232,160 @@ fun DownloadScreen(
     
     // 检查本地文件，并设置定期刷新
     LaunchedEffect(refreshTrigger) {
+        val effectStartTime = System.currentTimeMillis()
+        var checkDuration = 0L
+        var retryTotalDuration = 0L
+        var checkEndTime = 0L
+        var retryEndTime = 0L
+        var closeBroadcastTime = 0L
+        var postDelayTime = 0L
+        var handleOpenStartTime = 0L
+        var finalTimestampBeforeStartActivity = 0L // 用于计算总时间
+        
+        // Log Receive to Effect Start duration if triggerTimestamp is valid
+        if (triggerTimestamp != 0L) {
+            // Note: lastReceivedBroadcastTime isn't easily available here without more state/params
+            // We'll log relative to triggerTimestamp later
+             Log.d("TimingLog", "[B] (Approx) Receive to Effect Start: ${effectStartTime - triggerTimestamp}ms (includes potential queueing)")
+        }
+
         try {
+            // --- Initial Check Timing --- 
+            val checkStartTime = System.currentTimeMillis()
             val (file, type, isNewFile) = checkLocalFile(context, localFilePath)
+            checkEndTime = System.currentTimeMillis()
+            checkDuration = checkEndTime - checkStartTime
+            Log.d("TimingLog", "[C1] Initial checkLocalFile duration: ${checkDuration}ms")
             
-            val hadLocalFile = hasLocalFile
+            // Update state first
+            val hadLocalFile = hasLocalFile // Keep these if needed elsewhere
             val previousPath = localFilePath
-            
             hasLocalFile = file != null
             localFilePath = file?.absolutePath ?: ""
             localFileType = type
             
-            // --- 修改后的逻辑：检查是否需要自动打开文件 (忽略 isNewFile)，并添加重试 --- 
+            // --- Auto Open Logic with Timing --- 
             if (shouldAutoOpenFileAfterRefresh) {
                 if (hasLocalFile) {
-                    // 初始检查成功找到文件
-                    Log.d("AutoOpenFile", "初始检查找到文件 (isNewFile=$isNewFile)，调用 handleOpenLocalFile")
-                    handleOpenLocalFile()
-                    shouldAutoOpenFileAfterRefresh = false // 重置标记
+                    // Initial check succeeded
+                    Log.d("TimingLog", "Initial check successful.")
+                    Log.d("TimingLog", "[D1] Check Success to Send Close: ${System.currentTimeMillis() - checkEndTime}ms") // Time from check end to this point
+
+                    // Send Close Broadcast
+                    Log.d("AutoOpenFile", "发送 ACTION_CLOSE_PREVIOUS_PREVIEW 广播")
+                    val closeIntent = Intent(ACTION_CLOSE_PREVIOUS_PREVIEW).apply { setPackage(context.packageName) }
+                    closeBroadcastTime = System.currentTimeMillis()
+                    context.sendBroadcast(closeIntent)
+                    Log.d("TimingLog", "[E1] Send Close Broadcast overhead: ${System.currentTimeMillis() - closeBroadcastTime}ms")
+                    
+                    delay(100) // Fixed delay
+                    postDelayTime = System.currentTimeMillis()
+                    Log.d("TimingLog", "[F1] Post-Close Delay duration: ${postDelayTime - (closeBroadcastTime + (System.currentTimeMillis() - closeBroadcastTime))}ms (~100ms expected)") // More accurate delay log
+
+                    // Call handleOpenLocalFile
+                    Log.d("AutoOpenFile", "初始检查找到文件 (isNewFile=$isNewFile)，准备切换")
+                    handleOpenStartTime = System.currentTimeMillis()
+                    handleOpenLocalFile() // Assuming startActivity happens inside
+                    finalTimestampBeforeStartActivity = System.currentTimeMillis() // Approximates end time
+                    Log.d("TimingLog", "[G1] handleOpenLocalFile setup (approx): ${finalTimestampBeforeStartActivity - handleOpenStartTime}ms")
+                    
+                    shouldAutoOpenFileAfterRefresh = false // Reset flag
                 } else {
-                    // 初始检查未找到文件，开始重试
-                    Log.d("AutoOpenFile", "初始检查未找到文件，开始重试 (最多3秒, 0.2s/次)")
+                    // Initial check failed, start retry
+                    Log.d("TimingLog", "Initial check failed, starting retry.")
+                    val retryLoopStartTime = System.currentTimeMillis()
                     var retrySuccess = false
+                    var lastRetryCheckEndTime = 0L
+
                     for (retryAttempt in 1..15) {
+                        val preRetryDelayTime = System.currentTimeMillis()
                         delay(200)
-                        Log.d("AutoOpenFile", "重试检查 #${retryAttempt}")
-                        // 在重试时，我们仍然需要比较 isNewFile，以避免重复打开完全相同的文件
-                        // 但初始触发不再需要检查 isNewFile
-                        val (retryFile, retryType, retryIsNewFile) = checkLocalFile(context, localFilePath)
+                        val postRetryDelayTime = System.currentTimeMillis()
+                        Log.d("TimingLog", "Retry #${retryAttempt} delay duration: ${postRetryDelayTime - preRetryDelayTime}ms (~200ms expected)")
                         
+                        val retryCheckStartTime = System.currentTimeMillis()
+                        val (retryFile, retryType, retryIsNewFile) = checkLocalFile(context, localFilePath)
+                        lastRetryCheckEndTime = System.currentTimeMillis()
+                        val retryCheckDuration = lastRetryCheckEndTime - retryCheckStartTime
+                        Log.d("TimingLog", "Retry #${retryAttempt} check duration: ${retryCheckDuration}ms")
+
                         if (retryFile != null) {
-                            Log.d("AutoOpenFile", "重试成功找到文件: ${retryFile.absolutePath} (isNewFile=$retryIsNewFile)")
-                            // 更新状态以反映新找到的文件
+                            retryEndTime = System.currentTimeMillis() // Mark success time
+                            retryTotalDuration = retryEndTime - retryLoopStartTime
+                            Log.d("TimingLog", "[C2] Retry successful after ${retryTotalDuration}ms (including delays and checks)")
+
+                            // Update state
                             hasLocalFile = true
                             localFilePath = retryFile.absolutePath
                             localFileType = retryType
-                            // 打开文件
+                            
+                            Log.d("TimingLog", "[D2] Retry Check Success to Send Close: ${System.currentTimeMillis() - lastRetryCheckEndTime}ms")
+
+                            // Send Close Broadcast
+                            Log.d("AutoOpenFile", "发送 ACTION_CLOSE_PREVIOUS_PREVIEW 广播")
+                            val closeIntentRetry = Intent(ACTION_CLOSE_PREVIOUS_PREVIEW).apply { setPackage(context.packageName) }
+                            closeBroadcastTime = System.currentTimeMillis()
+                            context.sendBroadcast(closeIntentRetry)
+                            Log.d("TimingLog", "[E2] Send Close Broadcast overhead: ${System.currentTimeMillis() - closeBroadcastTime}ms")
+
+                            delay(100)
+                            postDelayTime = System.currentTimeMillis()
+                             Log.d("TimingLog", "[F2] Post-Close Delay duration: ${postDelayTime - (closeBroadcastTime + (System.currentTimeMillis() - closeBroadcastTime))}ms (~100ms expected)")
+
+                            // Open file
+                            Log.d("AutoOpenFile", "重试成功找到文件: ${retryFile.absolutePath} (isNewFile=$retryIsNewFile)，准备切换")
+                            handleOpenStartTime = System.currentTimeMillis()
                             handleOpenLocalFile()
-                            shouldAutoOpenFileAfterRefresh = false // 重置标记
+                            finalTimestampBeforeStartActivity = System.currentTimeMillis()
+                             Log.d("TimingLog", "[G2] handleOpenLocalFile setup (approx): ${finalTimestampBeforeStartActivity - handleOpenStartTime}ms")
+
+                            shouldAutoOpenFileAfterRefresh = false
                             retrySuccess = true
-                            break // 成功，跳出重试循环
+                            break
                         }
                     }
                     if (!retrySuccess) {
-                        Log.w("AutoOpenFile", "重试3秒后仍未找到新文件，放弃自动打开")
-                        shouldAutoOpenFileAfterRefresh = false // 重试超时，重置标记
+                        retryEndTime = System.currentTimeMillis()
+                        retryTotalDuration = retryEndTime - retryLoopStartTime
+                        Log.w("TimingLog", "[C2] Retry timed out after ${retryTotalDuration}ms")
+                        shouldAutoOpenFileAfterRefresh = false
+                        finalTimestampBeforeStartActivity = retryEndTime // Mark end time on timeout
                     }
                 }
+            } else {
+                 // Not auto-opening, mark end time for total calculation if needed
+                 finalTimestampBeforeStartActivity = System.currentTimeMillis() 
+                 if (hasLocalFile && isNewFile) { // Handle notification for non-auto-open case
+                     Log.d("LocalFileNotify", "显示新文件通知并发送广播 (isNewFile=$isNewFile, shouldAutoOpen=$shouldAutoOpenFileAfterRefresh)")
+                     // 不再使用 Toast，而是更新状态显示顶部通知栏
+                     topNotificationMessage = "收到新文件"
+                     showTopNotification = true
+                     // 启动一个协程，在短暂延迟后隐藏通知栏
+                     coroutineScope.launch {
+                         delay(2500) // 显示 2.5 秒
+                         showTopNotification = false
+                     }
+                     
+                     // 发送广播通知当前可能正在运行的预览活动
+                     if (file != null && type != null) {
+                         val broadcastIntent = Intent(ACTION_NEW_ADB_FILE).apply {
+                             putExtra(EXTRA_FILE_PATH, file.absolutePath)
+                             putExtra(EXTRA_FILE_TYPE, type.name)
+                             // 添加包名，使用显式 Intent
+                             setPackage(context.packageName)
+                         }
+                         context.sendBroadcast(broadcastIntent)
+                         Log.d("LocalFile", "发送新文件广播: ${file.absolutePath}, 类型: $type")
+                     }
+                 }
             }
-            // --- 结束修改后的逻辑 --- 
             
-            // 如果是新文件，显示提示并发送广播 (这部分逻辑保持不变，仅在非自动打开流程或需要时执行)
-            // Ensure this only runs if it wasn't handled by the auto-open logic above OR if auto-open wasn't requested
-            if (!shouldAutoOpenFileAfterRefresh && hasLocalFile && isNewFile) {
-                Log.d("LocalFileNotify", "显示新文件通知并发送广播 (isNewFile=$isNewFile, shouldAutoOpen=$shouldAutoOpenFileAfterRefresh)")
-                // 不再使用 Toast，而是更新状态显示顶部通知栏
-                topNotificationMessage = "收到新文件"
-                showTopNotification = true
-                // 启动一个协程，在短暂延迟后隐藏通知栏
-                coroutineScope.launch {
-                    delay(2500) // 显示 2.5 秒
-                    showTopNotification = false
-                }
-                
-                // 发送广播通知当前可能正在运行的预览活动
-                if (file != null && type != null) {
-                    val broadcastIntent = Intent(ACTION_NEW_ADB_FILE).apply {
-                        putExtra(EXTRA_FILE_PATH, file.absolutePath)
-                        putExtra(EXTRA_FILE_TYPE, type.name)
-                        // 添加包名，使用显式 Intent
-                        setPackage(context.packageName)
-                    }
-                    context.sendBroadcast(broadcastIntent)
-                    Log.d("LocalFile", "发送新文件广播: ${file.absolutePath}, 类型: $type")
-                }
+            // --- Total Time Calculation --- 
+            if (triggerTimestamp != 0L && finalTimestampBeforeStartActivity != 0L) {
+                 Log.d("TimingLog", "[H] TOTAL duration (Broadcast Send to ~StartActivity): ${finalTimestampBeforeStartActivity - triggerTimestamp}ms")
             }
-            
+             Log.d("TimingLog", "-- Timing End --")
+
             // 5秒后再次检查
             kotlinx.coroutines.delay(5000)
             refreshTrigger = (refreshTrigger + 1) % 1000 // 避免数值过大
