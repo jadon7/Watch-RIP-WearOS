@@ -59,6 +59,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
+import com.example.watchview.presentation.ui.ACTION_CLOSE_PREVIOUS_PREVIEW
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
@@ -137,21 +138,27 @@ class RivePreviewActivity : ComponentActivity() {
     // 添加新的文件接收广播
     private val newFileReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            Log.d("RivePreviewActivity", "收到广播: ${intent.action}")
-            val actionToTake = intent.action // 保存 action
-
-            // 先完成关闭 Activity 的操作
-            Log.i("RivePreviewActivity", "收到广播 ($actionToTake)，准备关闭当前预览...")
-            finish()
-
-            // 使用 CoroutineScope 在后台执行延迟和发送新广播
-            CoroutineScope(Dispatchers.Main).launch {
-                 // 等待 Activity 真正关闭可能需要一点时间，延迟 1 秒确保 finish() 生效
-                 // 并满足用户1秒后触发的需求
-                delay(1000L)
-                Log.d("RivePreviewActivity", "延迟结束，发送 ACTION_TRIGGER_WIRED_PREVIEW 广播")
-                val triggerIntent = Intent(ACTION_TRIGGER_WIRED_PREVIEW)
+            Log.d("RivePreviewActivity", "收到 newFileReceiver 广播: ${intent.action}")
+            // 只处理新文件广播
+            if (intent.action == ACTION_NEW_ADB_FILE) {
+                // 立即发送触发检查的广播
+                Log.d("RivePreviewActivity", "收到新文件广播，立即发送 ACTION_TRIGGER_WIRED_PREVIEW")
+                val triggerIntent = Intent(ACTION_TRIGGER_WIRED_PREVIEW).apply {
+                    setPackage(context.packageName)
+                }
                 context.sendBroadcast(triggerIntent)
+                // 不再 finish 或延迟发送
+            }
+            // 忽略 CLOSE_PREVIEW Action
+        }
+    }
+
+    // 添加新的关闭接收广播
+    private val closeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_CLOSE_PREVIOUS_PREVIEW) {
+                Log.i("RivePreviewActivity", "收到 ACTION_CLOSE_PREVIOUS_PREVIEW 广播，关闭预览")
+                finish()
             }
         }
     }
@@ -185,19 +192,22 @@ class RivePreviewActivity : ComponentActivity() {
                 IntentFilter(Intent.ACTION_BATTERY_CHANGED)
             )
             
-            // 注册广播接收器，监听两个 Action
+            // 注册旧的文件/关闭接收器
             val intentFilter = IntentFilter().apply {
                 addAction(ACTION_NEW_ADB_FILE)
-                addAction("com.example.watchview.CLOSE_PREVIEW")
+                // 不再监听旧的 CLOSE_PREVIEW Action
+                // addAction("com.example.watchview.CLOSE_PREVIEW")
             }
             registerReceiver(
                 newFileReceiver,
                 intentFilter,
-                Context.RECEIVER_NOT_EXPORTED // 这个 Receiver 只接收来自应用内部的广播，不需要导出
+                Context.RECEIVER_NOT_EXPORTED 
             )
+            // 注册新的关闭接收器
+            val closeFilter = IntentFilter(ACTION_CLOSE_PREVIOUS_PREVIEW)
+            registerReceiver(closeReceiver, closeFilter, Context.RECEIVER_NOT_EXPORTED)
             
-            // 增加广播接收标记，便于调试
-            Log.d("RivePreviewActivity", "已注册广播接收器: ACTION_NEW_ADB_FILE, com.example.watchview.CLOSE_PREVIEW")
+            Log.d("RivePreviewActivity", "已注册广播接收器: ACTION_NEW_ADB_FILE, ACTION_CLOSE_PREVIOUS_PREVIEW")
             
             // 启用向上导航
             actionBar?.setDisplayHomeAsUpEnabled(true)
@@ -454,6 +464,7 @@ class RivePreviewActivity : ComponentActivity() {
             // 取消注册广播接收器
             unregisterReceiver(batteryReceiver)
             unregisterReceiver(newFileReceiver)
+            unregisterReceiver(closeReceiver) // <-- 注销新的接收器
             // 移除 Rive 事件监听器和停止动画
             riveView?.let {
                 it.removeEventListener(eventListener)
