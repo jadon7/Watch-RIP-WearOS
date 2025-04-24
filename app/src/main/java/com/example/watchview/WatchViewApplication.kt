@@ -9,6 +9,6 @@ class WatchViewApplication : Application() {
         super.onCreate()
 
         // 设置Rive渲染器为Canvas渲染器
-        Rive.init(applicationContext, defaultRenderer = RendererType.Skia)
+//        Rive.init(applicationContext, defaultRenderer = RendererType.Rive)
     }
 }

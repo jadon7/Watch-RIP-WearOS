@@ -74,6 +74,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 import com.example.watchview.presentation.ui.ACTION_CLOSE_PREVIOUS_PREVIEW
+import android.view.TextureView
+import android.graphics.SurfaceTexture
+import android.view.Surface
 
 class MediaPreviewActivity : ComponentActivity() {
     private lateinit var wearableRecyclerView: WearableRecyclerView
@@ -208,12 +211,11 @@ class MediaPreviewActivity : ComponentActivity() {
                             }
                             MediaViewHolder.ImageViewHolder(imageView)
                         }
-                        else -> { // VIDEO using ExoPlayer
-                            val playerView = PlayerView(context).apply {
+                        else -> { // VIDEO using TextureView
+                            val textureView = TextureView(context).apply {
                                 this.layoutParams = layoutParams
-                                useController = false // 隐藏播放控制器
                             }
-                            MediaViewHolder.PlayerViewHolder(playerView)
+                            MediaViewHolder.PlayerViewHolder(textureView)
                         }
                     }
                 }
@@ -233,14 +235,74 @@ class MediaPreviewActivity : ComponentActivity() {
                                 }
                             }
                             holder.player = player
-                            holder.playerView.player = player
+                            // holder.playerView.player = player // 不再需要
 
-                            // 设置媒体项并准备播放
-                            val mediaItem = MediaItem.fromUri(media.file.toURI().toString())
-                            player.setMediaItem(mediaItem)
-                            player.prepare()
-                            // 只有当前项才自动播放
+                            // --- 设置 TextureView 监听器 ---
+                            if (holder.textureView.isAvailable) {
+                                // 如果 TextureView 已经可用 (例如重用 ViewHolder)
+                                Log.d("TextureViewSetup", "SurfaceTexture already AVAILABLE for pos $position")
+                                val surfaceTexture = holder.textureView.surfaceTexture
+                                if (surfaceTexture != null && (holder.surface == null || !holder.surface!!.isValid)) {
+                                     holder.surface?.release() // Release old surface if any
+                                     val newSurface = Surface(surfaceTexture)
+                                     holder.surface = newSurface
+                                     player.setVideoSurface(newSurface)
+                                     Log.d("TextureViewSetup", "Set video surface immediately.")
+                                } else if (holder.surface != null && holder.surface!!.isValid) {
+                                    // Surface is still valid, ensure player has it
+                                    player.setVideoSurface(holder.surface)
+                                     Log.d("TextureViewSetup", "Re-set existing valid surface.")
+                                }
+                            } 
+                            // 总是设置监听器，以防 TextureView 稍后变为可用或销毁
+                            holder.textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+                                    Log.d("TextureViewSetup", "SurfaceTexture AVAILABLE callback for pos $position")
+                                    if (holder.player == null) {
+                                        Log.w("TextureViewSetup", "Player is null in onSurfaceTextureAvailable for pos $position, skipping surface set.")
+                                        return
+                                    }
+                                    // 只有当 surface 为 null 或无效时才创建新的
+                                    if (holder.surface == null || !holder.surface!!.isValid) {
+                                        holder.surface?.release() // Release old if any
+                                        val newSurface = Surface(surfaceTexture)
+                                        holder.surface = newSurface
+                                        holder.player?.setVideoSurface(newSurface)
+                                        Log.d("TextureViewSetup", "Set new video surface in callback.")
+                                    } else {
+                                        // Surface 可能在 isAvailable 检查后、回调前被设置
+                                        // 确保 player 使用的是当前的 surface
+                                        holder.player?.setVideoSurface(holder.surface)
+                                        Log.d("TextureViewSetup", "Surface already valid in callback, re-set for player.")
+                                    }
+                                }
+
+                                override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {}
+
+                                override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+                                    Log.d("TextureViewSetup", "SurfaceTexture DESTROYED callback for pos $position")
+                                    holder.player?.setVideoSurface(null)
+                                    holder.surface?.release()
+                                    holder.surface = null
+                                    // 返回 true 表示 TextureView 可以安全释放 SurfaceTexture
+                                    // 如果我们自己管理 SurfaceTexture 生命周期，可能返回 false
+                                    return true 
+                                }
+
+                                override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {}
+                            }
+                            // --- 结束监听器设置 ---
+
+                            // 设置媒体项并准备播放 (如果 Player 尚未准备好)
+                            if (player.playbackState == Player.STATE_IDLE) {
+                                val mediaItem = MediaItem.fromUri(media.file.toURI().toString())
+                                player.setMediaItem(mediaItem)
+                                player.prepare()
+                                Log.d("ExoPlayerSetup", "Player prepared for pos $position")
+                            }
+                            // 控制播放状态
                             player.playWhenReady = (position == currentPosition)
+                            Log.d("ExoPlayerControl", "Set playWhenReady=${player.playWhenReady} for pos $position (current: $currentPosition)")
                         }
                     }
                 }
@@ -255,14 +317,18 @@ class MediaPreviewActivity : ComponentActivity() {
                 override fun onViewRecycled(holder: MediaViewHolder) {
                     super.onViewRecycled(holder)
                     if (holder is MediaViewHolder.PlayerViewHolder) {
-                        Log.d("ExoPlayerRecycle", "Recycling player view for holder at position ${holder.bindingAdapterPosition}")
+                        val recycledPosition = holder.bindingAdapterPosition
+                        Log.d("TextureViewRecycle", "Recycling TextureView holder at pos $recycledPosition")
+                        holder.textureView.surfaceTextureListener = null // 清理监听器
                         holder.player?.let { player ->
+                             Log.d("TextureViewRecycle", "Releasing player for pos $recycledPosition")
+                            player.setVideoSurface(null) // 确保清除 surface
                             player.stop()
                             player.release()
-                            players.remove(holder.bindingAdapterPosition) // 从 map 中移除
-                            Log.d("ExoPlayerRecycle", "Released player for position ${holder.bindingAdapterPosition}")
+                            players.remove(recycledPosition) // 从 map 中移除
                         }
-                        holder.playerView.player = null // 解除绑定
+                        holder.surface?.release() // 释放 surface
+                        holder.surface = null
                         holder.player = null
                     }
                 }
@@ -634,7 +700,8 @@ class MediaPreviewActivity : ComponentActivity() {
 
 sealed class MediaViewHolder(itemView: android.view.View) : RecyclerView.ViewHolder(itemView) {
     class ImageViewHolder(val imageView: ImageView) : MediaViewHolder(imageView)
-    class PlayerViewHolder(val playerView: PlayerView) : MediaViewHolder(playerView) {
-        var player: ExoPlayer? = null // Hold a reference to the player for recycling
+    class PlayerViewHolder(val textureView: TextureView) : MediaViewHolder(textureView) {
+        var player: ExoPlayer? = null
+        var surface: Surface? = null 
     }
 } 
