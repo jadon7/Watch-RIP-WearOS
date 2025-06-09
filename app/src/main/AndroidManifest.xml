@@ -70,9 +70,9 @@
             android:directBootAware="true"
             android:exported="false"
             tools:node="merge">
-            <meta-data
+            <!-- <meta-data
                 android:name="app.rive.runtime.kotlin.RiveInitializer"
-                android:value="androidx.startup" />
+                android:value="androidx.startup" /> -->
         </provider>
     </application>
 

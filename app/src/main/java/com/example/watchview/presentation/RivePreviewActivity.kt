@@ -60,11 +60,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 import com.example.watchview.presentation.ui.ACTION_CLOSE_PREVIOUS_PREVIEW
+import com.example.watchview.utils.RiveDataBindingHelper
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
     private var riveView: RiveAnimationView? = null
     private lateinit var vibrator: Vibrator
+    
+    // 添加数据绑定辅助类
+    private var dataBindingHelper: RiveDataBindingHelper? = null
     
     // 添加错误计数器
     private var errorCount = 0
@@ -470,6 +474,9 @@ class RivePreviewActivity : ComponentActivity() {
                 it.removeEventListener(eventListener)
                 it.stop()
             }
+            // 清理数据绑定资源
+            dataBindingHelper?.cleanup()
+            dataBindingHelper = null
             riveView = null
         } catch (e: Exception) {
             Log.e("RivePreviewActivity", "Error in onDestroy", e)
@@ -495,6 +502,10 @@ fun RivePlayerUI(
     var currentMonth by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH) + 1f) }
     var currentDay by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH).toFloat()) }
     var currentWeek by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1f) }
+
+    // 数据绑定辅助类状态
+    var dataBindingHelper by remember { mutableStateOf<RiveDataBindingHelper?>(null) }
+    var isDataBindingInitialized by remember { mutableStateOf(false) }
 
     // 减少更新频率，使用单个协程管理所有更新
     LaunchedEffect(Unit) {
@@ -529,6 +540,40 @@ fun RivePlayerUI(
                     setRiveFile(riveFile)
                     autoplay = true
                     addEventListener(eventListener)
+                    
+                    // 初始化数据绑定
+                    try {
+                        val helper = RiveDataBindingHelper(this)
+                        helper.initialize()
+                        dataBindingHelper = helper
+                        isDataBindingInitialized = true
+                        Log.i("RivePlayerUI", "Data binding initialized successfully")
+                        
+                        // 尝试获取默认 ViewModel 并创建实例
+                        val defaultViewModel = helper.getDefaultViewModel()
+                        if (defaultViewModel != null) {
+                            helper.createDefaultInstance(defaultViewModel, "default")
+                            Log.i("RivePlayerUI", "Default ViewModel instance created")
+                            
+                            // 发现可用的属性
+                            helper.logAvailableProperties("default")
+                        } else {
+                            Log.w("RivePlayerUI", "No default ViewModel found")
+                        }
+                        
+                        // 记录可用的枚举
+                        val enums = helper.getAvailableEnums()
+                        if (enums.isNotEmpty()) {
+                            Log.i("RivePlayerUI", "Available enums:")
+                            enums.forEach { (name, values) ->
+                                Log.i("RivePlayerUI", "  $name: ${values.joinToString(", ")}")
+                            }
+                        }
+                        
+                    } catch (e: Exception) {
+                        Log.e("RivePlayerUI", "Error initializing data binding", e)
+                    }
+                    
                     onRiveViewCreated(this)
                 }
             } catch (e: Exception) {
@@ -541,6 +586,7 @@ fun RivePlayerUI(
                 val artboard = riveView.file?.firstArtboard
                 val smNames = artboard?.stateMachineNames ?: emptyList()
                 
+                // 使用传统的状态机输入方式更新数据
                 if (smNames.isNotEmpty()) {
                     val firstMachineName = smNames[0]
                     
@@ -563,6 +609,26 @@ fun RivePlayerUI(
                     safeSetNumberState("dateDay", currentDay)
                     safeSetNumberState("dateWeek", currentWeek)
                 }
+                
+                // 如果数据绑定已初始化，也尝试使用数据绑定方式更新
+                if (isDataBindingInitialized && dataBindingHelper != null) {
+                    try {
+                        val helper = dataBindingHelper!!
+                        
+                        // 尝试使用数据绑定设置属性
+                        helper.setNumberProperty("default", "timeHour", currentHour)
+                        helper.setNumberProperty("default", "timeMinute", currentMinute)
+                        helper.setNumberProperty("default", "timeSecond", currentSecond)
+                        helper.setNumberProperty("default", "systemStatusBattery", currentBattery)
+                        helper.setNumberProperty("default", "dateMonth", currentMonth)
+                        helper.setNumberProperty("default", "dateDay", currentDay)
+                        helper.setNumberProperty("default", "dateWeek", currentWeek)
+                        
+                    } catch (e: Exception) {
+                        Log.e("RivePlayerUI", "Error updating via data binding", e)
+                    }
+                }
+                
             } catch (e: Exception) {
                 Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
             }

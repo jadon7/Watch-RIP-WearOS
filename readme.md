@@ -1,2 +1,1 @@
-待办项：
--   [x] 手动输入 IP 地址的输入框记录上次输入的值
+[Watch RIP](https://github.com/jadon7/Watch-RIP-MAC) 项目的附属 APP
