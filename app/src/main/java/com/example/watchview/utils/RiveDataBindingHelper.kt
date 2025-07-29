@@ -718,6 +718,106 @@ class RiveDataBindingHelper(private val riveView: RiveAnimationView) {
     }
     
     /**
+     * 将ViewModel实例绑定到State Machine
+     * 这是数据绑定生效的关键步骤
+     */
+    fun bindInstanceToStateMachine(instanceKey: String): Boolean {
+        return try {
+            val instance = viewModelInstances[instanceKey]
+            if (instance == null) {
+                Log.w(TAG, "ViewModel instance not found for binding: $instanceKey")
+                return false
+            }
+            
+            val controller = riveView.controller
+            if (controller == null) {
+                Log.w(TAG, "RiveView controller is null, cannot bind instance")
+                return false
+            }
+            
+            // 获取第一个State Machine进行绑定
+            val stateMachine = controller.stateMachines.firstOrNull()
+            if (stateMachine != null) {
+                stateMachine.viewModelInstance = instance
+                Log.i(TAG, "ViewModel instance bound to State Machine: $instanceKey")
+                return true
+            } else {
+                // 如果没有State Machine，尝试绑定到Artboard
+                val artboard = controller.activeArtboard
+                if (artboard != null) {
+                    artboard.viewModelInstance = instance
+                    Log.i(TAG, "ViewModel instance bound to Artboard: $instanceKey")
+                    return true
+                } else {
+                    Log.w(TAG, "No State Machine or Artboard available for binding")
+                    return false
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error binding ViewModel instance to State Machine: $instanceKey", e)
+            false
+        }
+    }
+    
+    /**
+     * 自动绑定功能：获取默认ViewModel，创建默认实例，并绑定到State Machine
+     * 这是官方推荐的自动绑定流程的实现
+     */
+    fun initializeWithAutoBind(): Boolean {
+        return try {
+            // 1. 初始化数据绑定
+            initialize()
+            
+            // 2. 获取默认ViewModel
+            val defaultViewModel = getDefaultViewModel()
+            if (defaultViewModel == null) {
+                Log.w(TAG, "No default ViewModel found for auto-binding")
+                return false
+            }
+            
+            // 3. 创建默认实例
+            val instance = createDefaultInstance(defaultViewModel, "auto_default")
+            if (instance == null) {
+                Log.w(TAG, "Failed to create default instance for auto-binding")
+                return false
+            }
+            
+            // 4. 绑定实例到State Machine
+            val bindingSuccess = bindInstanceToStateMachine("auto_default")
+            if (bindingSuccess) {
+                Log.i(TAG, "Auto-binding completed successfully")
+                
+                // 5. 发现可用属性
+                logAvailableProperties("auto_default")
+                
+                // 6. 记录可用枚举
+                val enums = getAvailableEnums()
+                if (enums.isNotEmpty()) {
+                    Log.i(TAG, "Available enums after auto-binding:")
+                    enums.forEach { (name, values) ->
+                        Log.i(TAG, "  $name: ${values.joinToString(", ")}")
+                    }
+                }
+                
+                return true
+            } else {
+                Log.w(TAG, "Auto-binding failed at binding step")
+                return false
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during auto-binding", e)
+            false
+        }
+    }
+    
+    /**
+     * 获取自动绑定的实例key
+     * 用于在自动绑定后访问属性
+     */
+    fun getAutoBoundInstanceKey(): String = "auto_default"
+    
+    /**
      * 清理资源
      */
     fun cleanup() {

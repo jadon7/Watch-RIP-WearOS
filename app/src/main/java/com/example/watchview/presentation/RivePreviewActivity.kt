@@ -541,37 +541,33 @@ fun RivePlayerUI(
                     autoplay = true
                     addEventListener(eventListener)
                     
-                    // 初始化数据绑定
+                    // 初始化数据绑定 - 使用自动绑定功能
                     try {
                         val helper = RiveDataBindingHelper(this)
-                        helper.initialize()
-                        dataBindingHelper = helper
-                        isDataBindingInitialized = true
-                        Log.i("RivePlayerUI", "Data binding initialized successfully")
+                        val autoBindSuccess = helper.initializeWithAutoBind()
                         
-                        // 尝试获取默认 ViewModel 并创建实例
-                        val defaultViewModel = helper.getDefaultViewModel()
-                        if (defaultViewModel != null) {
-                            helper.createDefaultInstance(defaultViewModel, "default")
-                            Log.i("RivePlayerUI", "Default ViewModel instance created")
-                            
-                            // 发现可用的属性
-                            helper.logAvailableProperties("default")
+                        if (autoBindSuccess) {
+                            dataBindingHelper = helper
+                            isDataBindingInitialized = true
+                            Log.i("RivePlayerUI", "Auto-binding completed successfully")
                         } else {
-                            Log.w("RivePlayerUI", "No default ViewModel found")
-                        }
-                        
-                        // 记录可用的枚举
-                        val enums = helper.getAvailableEnums()
-                        if (enums.isNotEmpty()) {
-                            Log.i("RivePlayerUI", "Available enums:")
-                            enums.forEach { (name, values) ->
-                                Log.i("RivePlayerUI", "  $name: ${values.joinToString(", ")}")
+                            // 自动绑定失败时的降级处理
+                            Log.w("RivePlayerUI", "Auto-binding failed, falling back to manual initialization")
+                            helper.initialize()
+                            dataBindingHelper = helper
+                            isDataBindingInitialized = false
+                            
+                            // 手动创建实例但不绑定（保持原有行为作为备用）
+                            val defaultViewModel = helper.getDefaultViewModel()
+                            if (defaultViewModel != null) {
+                                helper.createDefaultInstance(defaultViewModel, "default")
+                                Log.i("RivePlayerUI", "Manual fallback: Default ViewModel instance created")
                             }
                         }
                         
                     } catch (e: Exception) {
-                        Log.e("RivePlayerUI", "Error initializing data binding", e)
+                        Log.e("RivePlayerUI", "Error during data binding initialization", e)
+                        isDataBindingInitialized = false
                     }
                     
                     onRiveViewCreated(this)
@@ -615,7 +611,25 @@ fun RivePlayerUI(
                     try {
                         val helper = dataBindingHelper!!
                         
+                        // 使用自动绑定的实例key
+                        val instanceKey = helper.getAutoBoundInstanceKey()
+                        
                         // 尝试使用数据绑定设置属性
+                        helper.setNumberProperty(instanceKey, "timeHour", currentHour)
+                        helper.setNumberProperty(instanceKey, "timeMinute", currentMinute)
+                        helper.setNumberProperty(instanceKey, "timeSecond", currentSecond)
+                        helper.setNumberProperty(instanceKey, "systemStatusBattery", currentBattery)
+                        helper.setNumberProperty(instanceKey, "dateMonth", currentMonth)
+                        helper.setNumberProperty(instanceKey, "dateDay", currentDay)
+                        helper.setNumberProperty(instanceKey, "dateWeek", currentWeek)
+                        
+                    } catch (e: Exception) {
+                        Log.e("RivePlayerUI", "Error updating via data binding", e)
+                    }
+                } else if (dataBindingHelper != null) {
+                    // 降级到使用 "default" 实例key（用于手动初始化的情况）
+                    try {
+                        val helper = dataBindingHelper!!
                         helper.setNumberProperty("default", "timeHour", currentHour)
                         helper.setNumberProperty("default", "timeMinute", currentMinute)
                         helper.setNumberProperty("default", "timeSecond", currentSecond)
@@ -623,9 +637,8 @@ fun RivePlayerUI(
                         helper.setNumberProperty("default", "dateMonth", currentMonth)
                         helper.setNumberProperty("default", "dateDay", currentDay)
                         helper.setNumberProperty("default", "dateWeek", currentWeek)
-                        
                     } catch (e: Exception) {
-                        Log.e("RivePlayerUI", "Error updating via data binding", e)
+                        Log.e("RivePlayerUI", "Error updating via fallback data binding", e)
                     }
                 }
                 
