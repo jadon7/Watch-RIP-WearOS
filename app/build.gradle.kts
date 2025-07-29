@@ -13,7 +13,7 @@ android {
         minSdk = 30                             // 最低支持的 Android 版本 (WearOS)
         targetSdk = 34                          // 目标 Android 版本
         versionCode = 2                         // 应用版本号
-        versionName = "2.4.0"                     // 应用版本名称
+        versionName = "2.4.1"                     // 应用版本名称
         vectorDrawables {
             useSupportLibrary = true            // 启用矢量图支持
         }
@@ -79,8 +79,8 @@ dependencies {
     
     // 第三方库依赖
     implementation("com.google.accompanist:accompanist-pager:0.28.0")  // 分页组件
-    implementation("app.rive:rive-android:10.2.1")                    // Rive 动画支持 (注释掉原有依赖)
-//     implementation(files("libs/kotlin-release.aar"))                   // 添加本地 AAR 依赖
+//    implementation("app.rive:rive-android:10.3.1")                    // Rive 动画支持 (注释掉原有依赖)
+     implementation(files("libs/kotlin-release.aar"))                   // 添加本地 AAR 依赖
     implementation("androidx.startup:startup-runtime:1.1.1")           // App Startup
     implementation("com.getkeepsafe.relinker:relinker:1.4.5")          // Rive 需要的 ReLinker 库
 }
