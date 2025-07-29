@@ -79,8 +79,8 @@ dependencies {
     
     // 第三方库依赖
     implementation("com.google.accompanist:accompanist-pager:0.28.0")  // 分页组件
-//    implementation("app.rive:rive-android:10.1.4")                    // Rive 动画支持 (注释掉原有依赖)
-     implementation(files("libs/kotlin-release.aar"))                   // 添加本地 AAR 依赖
+    implementation("app.rive:rive-android:10.2.1")                    // Rive 动画支持 (注释掉原有依赖)
+//     implementation(files("libs/kotlin-release.aar"))                   // 添加本地 AAR 依赖
     implementation("androidx.startup:startup-runtime:1.1.1")           // App Startup
     implementation("com.getkeepsafe.relinker:relinker:1.4.5")          // Rive 需要的 ReLinker 库
 }
