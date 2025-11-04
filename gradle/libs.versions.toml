@@ -1,4 +1,5 @@
 [versions]
+# Keep in sync with root build.gradle.kts if you switch back to plugin aliases
 agp = "8.10.1"
 kotlin = "1.9.0"
 playServicesWearable = "19.0.0"
@@ -28,4 +29,3 @@ androidx-startup = { group = "androidx.startup", name = "startup-runtime", versi
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-
