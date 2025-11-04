@@ -5,12 +5,16 @@ import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.*
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -26,19 +30,24 @@ import androidx.compose.ui.window.SecureFlagPolicy
 import com.example.watchview.presentation.theme.WatchViewTheme
 import java.io.File
 import kotlinx.coroutines.*
+import androidx.core.view.InputDeviceCompat
 import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
 import app.rive.runtime.kotlin.core.File as RiveCoreFile
-import app.rive.runtime.kotlin.core.SMINumber
 import java.util.*
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import androidx.compose.runtime.collectAsState
 import android.util.Log
 import app.rive.runtime.kotlin.controllers.RiveFileController
 import android.os.VibrationEffect
@@ -61,6 +70,12 @@ import kotlinx.coroutines.launch
 import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 import com.example.watchview.presentation.ui.ACTION_CLOSE_PREVIOUS_PREVIEW
 import com.example.watchview.utils.RiveDataBindingHelper
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+private const val DEVICE_KNOB_SETTLE_DELAY_MS = 120L
+
+data class RotaryScrollEvent(val delta: Float, val uptimeMillis: Long)
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
@@ -77,6 +92,12 @@ class RivePreviewActivity : ComponentActivity() {
     // 添加电池电量状态
     private val _batteryLevel = MutableStateFlow(0f)
     val batteryLevel: StateFlow<Float> = _batteryLevel.asStateFlow()
+    
+    // 旋钮事件流
+    private val rotaryEvents = MutableSharedFlow<RotaryScrollEvent>(
+        extraBufferCapacity = 32,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     
     // 添加协程作用域
     private val activityScope = MainScope()
@@ -445,9 +466,12 @@ class RivePreviewActivity : ComponentActivity() {
                             }
                     ) {
                         // 将电池电量传递给 RivePlayerUI
+                        val batteryState by batteryLevel.collectAsState()
+
                         RivePlayerUI(
                             file = File(filePath),
-                            batteryLevel = batteryLevel.collectAsState().value,
+                            batteryLevel = batteryState,
+                            rotaryEvents = rotaryEvents.asSharedFlow(),
                             onRiveViewCreated = { view -> riveView = view },
                             eventListener = eventListener
                         )
@@ -458,6 +482,19 @@ class RivePreviewActivity : ComponentActivity() {
             Log.e("RivePreviewActivity", "Error in onCreate", e)
             handleError(e)
         }
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (event.action == MotionEvent.ACTION_SCROLL &&
+            event.isFromSource(InputDeviceCompat.SOURCE_ROTARY_ENCODER)
+        ) {
+            val delta = -event.getAxisValue(MotionEvent.AXIS_SCROLL)
+            if (!rotaryEvents.tryEmit(RotaryScrollEvent(delta, event.eventTime))) {
+                Log.d("RivePreviewActivity", "Rotary event dropped (buffer full)")
+            }
+            return true
+        }
+        return super.onGenericMotionEvent(event)
     }
 
     override fun onDestroy() {
@@ -492,6 +529,7 @@ class RivePreviewActivity : ComponentActivity() {
 fun RivePlayerUI(
     file: java.io.File,
     batteryLevel: Float,
+    rotaryEvents: Flow<RotaryScrollEvent>,
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener
 ) {
@@ -502,18 +540,51 @@ fun RivePlayerUI(
     var currentMonth by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH) + 1f) }
     var currentDay by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH).toFloat()) }
     var currentWeek by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1f) }
+    var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
 
-    // 数据绑定辅助类状态
     var dataBindingHelper by remember { mutableStateOf<RiveDataBindingHelper?>(null) }
     var isDataBindingInitialized by remember { mutableStateOf(false) }
+    val deviceKnobAnim = remember { Animatable(1f) }
+    var deviceKnobTarget by remember { mutableFloatStateOf(1f) }
+    var deviceKnobPosition by remember { mutableFloatStateOf(1f) }
+    var settleJob by remember { mutableStateOf<Job?>(null) }
+    val knobDeltaMultiplier = remember { 1.2f }
+    var lastSentDeviceKnob by remember { mutableFloatStateOf(1f) }
+    var lastSendSuccessful by remember { mutableStateOf(false) }
+    var initialSynced by remember { mutableStateOf(false) }
 
-    // 减少更新频率，使用单个协程管理所有更新
+    LaunchedEffect(rotaryEvents) {
+        rotaryEvents.collect { event ->
+            val delta = event.delta * knobDeltaMultiplier
+            if (delta == 0f) return@collect
+            deviceKnobAnim.stop()
+            deviceKnobTarget += delta
+            val immediateTarget = deviceKnobTarget
+            deviceKnobAnim.snapTo(immediateTarget)
+            settleJob?.cancel()
+            settleJob = launch {
+                val settleTarget = immediateTarget
+                delay(DEVICE_KNOB_SETTLE_DELAY_MS)
+                if (deviceKnobTarget == settleTarget) {
+                    val rounded = settleTarget.roundToInt().toFloat()
+                    deviceKnobTarget = rounded
+                    deviceKnobAnim.snapTo(rounded)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(deviceKnobAnim) {
+        snapshotFlow { deviceKnobAnim.value }
+            .collect { value ->
+                deviceKnobPosition = value
+            }
+    }
+
     LaunchedEffect(Unit) {
-        while (isActive) { // 检查协程是否仍然活跃
+        while (isActive) {
             try {
                 val calendar = Calendar.getInstance()
-                
-                // 更新所有时间相关状态
                 currentHour = (calendar.get(Calendar.HOUR_OF_DAY) + calendar.get(Calendar.MINUTE) / 60f).round(1)
                 currentMinute = (calendar.get(Calendar.MINUTE) + calendar.get(Calendar.SECOND) / 60f).round(1)
                 currentSecond = (calendar.get(Calendar.SECOND) + calendar.get(Calendar.MILLISECOND) / 1000f).round(2)
@@ -521,11 +592,8 @@ fun RivePlayerUI(
                 currentDay = calendar.get(Calendar.DAY_OF_MONTH).toFloat()
                 currentWeek = (calendar.get(Calendar.DAY_OF_WEEK) - 1).toFloat()
                 currentBattery = batteryLevel
-                
-                // 使用较长的延迟时间
-                delay(1000L) // 每秒更新一次
+                delay(1000L)
             } catch (e: Exception) {
-                // 如果是取消异常，应该重新抛出以停止协程
                 if (e is CancellationException) throw e
                 Log.e("RivePlayerUI", "Error updating time", e)
             }
@@ -536,40 +604,37 @@ fun RivePlayerUI(
         factory = { context ->
             try {
                 RiveAnimationView(context).apply {
+                    riveViewRef = this
                     val riveFile = RiveCoreFile(file.readBytes())
                     setRiveFile(riveFile)
                     autoplay = true
                     addEventListener(eventListener)
-                    
-                    // 初始化数据绑定 - 使用自动绑定功能
+
                     try {
                         val helper = RiveDataBindingHelper(this)
                         val autoBindSuccess = helper.initializeWithAutoBind()
-                        
+
                         if (autoBindSuccess) {
                             dataBindingHelper = helper
                             isDataBindingInitialized = true
                             Log.i("RivePlayerUI", "Auto-binding completed successfully")
                         } else {
-                            // 自动绑定失败时的降级处理
                             Log.w("RivePlayerUI", "Auto-binding failed, falling back to manual initialization")
                             helper.initialize()
                             dataBindingHelper = helper
                             isDataBindingInitialized = false
-                            
-                            // 手动创建实例但不绑定（保持原有行为作为备用）
-                            val defaultViewModel = helper.getDefaultViewModel()
-                            if (defaultViewModel != null) {
+
+                            helper.getDefaultViewModel()?.let { defaultViewModel ->
                                 helper.createDefaultInstance(defaultViewModel, "default")
                                 Log.i("RivePlayerUI", "Manual fallback: Default ViewModel instance created")
                             }
                         }
-                        
+
                     } catch (e: Exception) {
                         Log.e("RivePlayerUI", "Error during data binding initialization", e)
                         isDataBindingInitialized = false
                     }
-                    
+
                     onRiveViewCreated(this)
                 }
             } catch (e: Exception) {
@@ -579,24 +644,26 @@ fun RivePlayerUI(
         },
         update = { riveView ->
             try {
+                riveViewRef = riveView
                 val artboard = riveView.file?.firstArtboard
                 val smNames = artboard?.stateMachineNames ?: emptyList()
-                
-                // 使用传统的状态机输入方式更新数据
-                if (smNames.isNotEmpty()) {
-                    val firstMachineName = smNames[0]
-                    
-                    fun safeSetNumberState(inputName: String, value: Float) {
-                        try {
-                            val firstMachine = artboard?.stateMachine(firstMachineName)
-                            if (firstMachine?.inputs?.any { it.name == inputName } == true) {
-                                riveView.setNumberState(firstMachineName, inputName, value)
-                            }
-                        } catch (e: Exception) {
-                            Log.e("RivePlayerUI", "Error setting state: $inputName = $value", e)
-                        }
-                    }
+                var writeSucceeded = false
 
+                fun safeSetNumberState(inputName: String, value: Float): Boolean {
+                    try {
+                        val machineName = smNames.firstOrNull()
+                        val stateMachine = machineName?.let { artboard?.stateMachine(it) }
+                        if (machineName != null && stateMachine?.inputs?.any { it.name == inputName } == true) {
+                            riveView.setNumberState(machineName, inputName, value)
+                            return true
+                        }
+                    } catch (e: Exception) {
+                        Log.e("RivePlayerUI", "Error setting state: $inputName = $value", e)
+                    }
+                    return false
+                }
+
+                if (smNames.isNotEmpty()) {
                     safeSetNumberState("timeHour", currentHour)
                     safeSetNumberState("timeMinute", currentMinute)
                     safeSetNumberState("timeSecond", currentSecond)
@@ -604,50 +671,66 @@ fun RivePlayerUI(
                     safeSetNumberState("dateMonth", currentMonth)
                     safeSetNumberState("dateDay", currentDay)
                     safeSetNumberState("dateWeek", currentWeek)
-                }
-                
-                // 如果数据绑定已初始化，也尝试使用数据绑定方式更新
-                if (isDataBindingInitialized && dataBindingHelper != null) {
-                    try {
-                        val helper = dataBindingHelper!!
-                        
-                        // 使用自动绑定的实例key
-                        val instanceKey = helper.getAutoBoundInstanceKey()
-                        
-                        // 尝试使用数据绑定设置属性
-                        helper.setNumberProperty(instanceKey, "timeHour", currentHour)
-                        helper.setNumberProperty(instanceKey, "timeMinute", currentMinute)
-                        helper.setNumberProperty(instanceKey, "timeSecond", currentSecond)
-                        helper.setNumberProperty(instanceKey, "systemStatusBattery", currentBattery)
-                        helper.setNumberProperty(instanceKey, "dateMonth", currentMonth)
-                        helper.setNumberProperty(instanceKey, "dateDay", currentDay)
-                        helper.setNumberProperty(instanceKey, "dateWeek", currentWeek)
-                        
-                    } catch (e: Exception) {
-                        Log.e("RivePlayerUI", "Error updating via data binding", e)
-                    }
-                } else if (dataBindingHelper != null) {
-                    // 降级到使用 "default" 实例key（用于手动初始化的情况）
-                    try {
-                        val helper = dataBindingHelper!!
-                        helper.setNumberProperty("default", "timeHour", currentHour)
-                        helper.setNumberProperty("default", "timeMinute", currentMinute)
-                        helper.setNumberProperty("default", "timeSecond", currentSecond)
-                        helper.setNumberProperty("default", "systemStatusBattery", currentBattery)
-                        helper.setNumberProperty("default", "dateMonth", currentMonth)
-                        helper.setNumberProperty("default", "dateDay", currentDay)
-                        helper.setNumberProperty("default", "dateWeek", currentWeek)
-                    } catch (e: Exception) {
-                        Log.e("RivePlayerUI", "Error updating via fallback data binding", e)
+                    val deviceSet = safeSetNumberState("deviceKnob", deviceKnobPosition)
+                    if (deviceSet) {
+                        writeSucceeded = true
                     }
                 }
-                
+
+                val bindingSuccess = dataBindingHelper?.let { helper ->
+                    val instanceKey = if (isDataBindingInitialized) helper.getAutoBoundInstanceKey() else "default"
+                    helper.setNumberProperty(instanceKey, "timeHour", currentHour)
+                    helper.setNumberProperty(instanceKey, "timeMinute", currentMinute)
+                    helper.setNumberProperty(instanceKey, "timeSecond", currentSecond)
+                    helper.setNumberProperty(instanceKey, "systemStatusBattery", currentBattery)
+                    helper.setNumberProperty(instanceKey, "dateMonth", currentMonth)
+                    helper.setNumberProperty(instanceKey, "dateDay", currentDay)
+                    helper.setNumberProperty(instanceKey, "dateWeek", currentWeek)
+                    helper.setNumberProperty(instanceKey, "deviceKnob", deviceKnobPosition)
+                } ?: false
+
+                if (bindingSuccess) {
+                    writeSucceeded = true
+                }
+
+                if (writeSucceeded) {
+                    lastSentDeviceKnob = deviceKnobPosition
+                    lastSendSuccessful = true
+                } else {
+                    lastSendSuccessful = false
+                }
             } catch (e: Exception) {
                 Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
             }
         },
         modifier = Modifier.fillMaxSize()
     )
+
+    DisposableEffect(Unit) {
+        onDispose {
+            settleJob?.cancel()
+            riveViewRef = null
+        }
+    }
+
+    LaunchedEffect(dataBindingHelper, isDataBindingInitialized, riveViewRef) {
+        val helper = dataBindingHelper ?: return@LaunchedEffect
+        if (initialSynced) return@LaunchedEffect
+        try {
+            val key = if (isDataBindingInitialized) helper.getAutoBoundInstanceKey() else "default"
+            val initialValue = helper.getNumberProperty(key, "deviceKnob")
+            if (initialValue != null && !initialValue.isNaN()) {
+                deviceKnobTarget = initialValue
+                deviceKnobAnim.snapTo(initialValue)
+                deviceKnobPosition = initialValue
+                lastSentDeviceKnob = initialValue
+                lastSendSuccessful = true
+                initialSynced = true
+            }
+        } catch (e: Exception) {
+            Log.d("RivePlayerUI", "Initial deviceKnob sync failed", e)
+        }
+    }
 }
 
 // 扩展函数：对 Float 进行四舍五入并保留指定位数的小数
