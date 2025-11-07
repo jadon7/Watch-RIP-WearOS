@@ -34,9 +34,9 @@ fun RivePlayerUI(
     var currentDay by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH).toFloat()) }
     var currentWeek by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1f) }
 
-    // 2. 保存数据绑定 Helper 状态
-    var dataBindingHelper by remember { mutableStateOf<RiveDataBindingHelper?>(null) }
-    var isDataBindingInitialized by remember { mutableStateOf(false) }
+    // 2. 记录自动绑定得到的 ViewModelInstance
+    var boundViewModelInstance by remember { mutableStateOf<ViewModelInstance?>(null) }
+    val missingViewModelProperties = remember { mutableSetOf<String>() }
 
     // 3. 协程每秒刷新时间、电量
     LaunchedEffect(Unit) {
@@ -48,9 +48,12 @@ fun RivePlayerUI(
             currentMonth = (calendar.get(Calendar.MONTH) + 1).toFloat()
             currentDay = calendar.get(Calendar.DAY_OF_MONTH).toFloat()
             currentWeek = (calendar.get(Calendar.DAY_OF_WEEK) - 1).toFloat()
-            currentBattery = batteryLevel
             delay(1000L) // 每秒刷新一次
         }
+    }
+
+    LaunchedEffect(batteryLevel) {
+        currentBattery = batteryLevel
     }
 
     AndroidView(
@@ -61,21 +64,12 @@ fun RivePlayerUI(
                 autoplay = true
                 addEventListener(eventListener)
 
-                // 4. 初始化数据绑定（自动绑定 + 兜底）
-                val helper = RiveDataBindingHelper(this)
-                val autoBindSuccess = helper.initializeWithAutoBind()
-                if (autoBindSuccess) {
-                    dataBindingHelper = helper
-                    isDataBindingInitialized = true
-                    Log.i("RivePlayerUI", "Auto-binding completed successfully")
+                // 4. 绑定 ViewModelInstance（若 Rive 已自动绑定则直接复用）
+                boundViewModelInstance = ensureViewModelBinding()
+                if (boundViewModelInstance != null) {
+                    Log.i("RivePlayerUI", "ViewModel instance ready for data binding")
                 } else {
-                    Log.w("RivePlayerUI", "Auto-binding failed, falling back to manual initialization")
-                    helper.initialize()
-                    helper.getDefaultViewModel()?.let {
-                        helper.createDefaultInstance(it, "default")
-                    }
-                    dataBindingHelper = helper
-                    isDataBindingInitialized = false
+                    Log.w("RivePlayerUI", "No ViewModel instance bound; falling back to state-machine inputs")
                 }
 
                 onRiveViewCreated(this)
@@ -83,9 +77,9 @@ fun RivePlayerUI(
         },
         update = { riveView ->
             val artboard = riveView.file?.firstArtboard
-            val helper = dataBindingHelper
+            val viewModelInstance = boundViewModelInstance
 
-            // 5a. 兼容传统 State Machine 输入
+            // 5a. 若仍未绑定到 ViewModel，则兼容传统 State Machine 输入
             artboard?.stateMachineNames?.firstOrNull()?.let { machine ->
                 fun setNumber(inputName: String, value: Float) {
                     artboard.stateMachine(machine)?.inputs?.firstOrNull { it.name == inputName } ?: return
@@ -100,20 +94,15 @@ fun RivePlayerUI(
                 setNumber("dateWeek", currentWeek)
             }
 
-            // 5b. 使用数据绑定写入
-            if (helper != null) {
-                val instanceKey = if (isDataBindingInitialized) {
-                    helper.getAutoBoundInstanceKey() // "auto_default"
-                } else {
-                    "default" // 手动兜底实例
-                }
-                helper.setNumberProperty(instanceKey, "timeHour", currentHour)
-                helper.setNumberProperty(instanceKey, "timeMinute", currentMinute)
-                helper.setNumberProperty(instanceKey, "timeSecond", currentSecond)
-                helper.setNumberProperty(instanceKey, "systemStatusBattery", currentBattery)
-                helper.setNumberProperty(instanceKey, "dateMonth", currentMonth)
-                helper.setNumberProperty(instanceKey, "dateDay", currentDay)
-                helper.setNumberProperty(instanceKey, "dateWeek", currentWeek)
+            // 5b. 若绑定成功，则直接通过 ViewModelInstance 写入属性
+            if (viewModelInstance != null) {
+                viewModelInstance.setNumberProperty("timeHour", currentHour, missingViewModelProperties)
+                viewModelInstance.setNumberProperty("timeMinute", currentMinute, missingViewModelProperties)
+                viewModelInstance.setNumberProperty("timeSecond", currentSecond, missingViewModelProperties)
+                viewModelInstance.setNumberProperty("systemStatusBattery", currentBattery, missingViewModelProperties)
+                viewModelInstance.setNumberProperty("dateMonth", currentMonth, missingViewModelProperties)
+                viewModelInstance.setNumberProperty("dateDay", currentDay, missingViewModelProperties)
+                viewModelInstance.setNumberProperty("dateWeek", currentWeek, missingViewModelProperties)
             }
         },
         modifier = Modifier.fillMaxSize()
@@ -125,35 +114,18 @@ fun RivePlayerUI(
 
 ---
 
-## 3. `RiveDataBindingHelper` 关键接口示例
-`utils/RiveDataBindingHelper.kt` 封装了 ViewModel/Instance 操作。以下片段展示最常用的 API：
+## 3. 核心扩展函数
 
-```kotlin
-class RiveDataBindingHelper(private val riveView: RiveAnimationView) {
-    private val viewModelInstances: MutableMap<String, ViewModelInstance> = mutableMapOf()
+### `RiveAnimationView.ensureViewModelBinding()`
+封装在 `RivePreviewActivity.kt` 末尾，用于：
 
-    fun initializeWithAutoBind(): Boolean {
-        initialize()
-        val defaultViewModel = getDefaultViewModel() ?: return false
-        val instance = createDefaultInstance(defaultViewModel, "auto_default") ?: return false
-        if (!bindInstanceToStateMachine("auto_default")) return false
-        logAvailableProperties("auto_default")
-        return true
-    }
+1. 若 `stateMachines.firstOrNull()?.viewModelInstance` 已存在，则直接复用；
+2. 否则获取当前 artboard 的默认 ViewModel，创建实例；
+3. 优先绑定到第一个 State Machine，若不存在则退回绑定到 artboard；
+4. 返回绑定后的 `ViewModelInstance`，供上层状态持有。
 
-    fun setNumberProperty(instanceKey: String, propertyName: String, value: Float): Boolean {
-        val instance = viewModelInstances[instanceKey] ?: return false
-        val property = instance.getNumberProperty(propertyName) ?: return false
-        property.value = value
-        Log.d(TAG, "Set number property: $instanceKey.$propertyName = $value")
-        return true
-    }
-
-    fun getAutoBoundInstanceKey(): String = "auto_default"
-}
-```
-
-常见的异常都会在内部捕获并输出到 `Logcat`，因此调用端只需关注返回值即可。
+### `ViewModelInstance.setNumberProperty(...)`
+同样位于文件底部，负责安全写入数值属性并记录缺失字段。避免了重复 try/catch，也能在属性名拼写错误时只打印一次日志。
 
 ---
 
@@ -165,58 +137,39 @@ val riveView = RiveAnimationView(context).apply {
     setRiveFile(RiveCoreFile(riveFileBytes))
 }
 
-val bindingHelper = RiveDataBindingHelper(riveView)
-val instanceKey = if (bindingHelper.initializeWithAutoBind()) {
-    bindingHelper.getAutoBoundInstanceKey() // "auto_default"
+val viewModelInstance = riveView.ensureViewModelBinding()
+if (viewModelInstance == null) {
+    // 若 Rive 文件没有暴露 ViewModel，则继续使用传统 state machine 输入
+    riveView.setNumberState("State Machine 1", "timeHour", hour)
 } else {
-    bindingHelper.initialize()
-    bindingHelper.getDefaultViewModel()?.let {
-        bindingHelper.createDefaultInstance(it, "default")
-    }
-    "default"
-}
-
-// 定时任务 / 协程内写入属性
-timerScope.launch {
-    while (isActive) {
-        val now = Calendar.getInstance()
-        val hour = (now.get(Calendar.HOUR_OF_DAY) + now.get(Calendar.MINUTE) / 60f)
-        val minute = (now.get(Calendar.MINUTE) + now.get(Calendar.SECOND) / 60f)
-        val second = (now.get(Calendar.SECOND) + now.get(Calendar.MILLISECOND) / 1000f)
-
-        bindingHelper.setNumberProperty(instanceKey, "timeHour", hour)
-        bindingHelper.setNumberProperty(instanceKey, "timeMinute", minute)
-        bindingHelper.setNumberProperty(instanceKey, "timeSecond", second)
-        delay(1000)
-    }
+    viewModelInstance.setNumberProperty("timeHour", hour, missingProperties)
+    viewModelInstance.setNumberProperty("timeMinute", minute, missingProperties)
+    viewModelInstance.setNumberProperty("timeSecond", second, missingProperties)
 }
 ```
 
-将以上模板嵌入任意 Activity/Fragment/Compose 组件即可完成时间数据注入。
+> `missingProperties` 为一个 `mutableSetOf<String>()`，用于避免重复打印缺失字段的日志。
 
 ---
 
 ## 5. 触发器与其他属性示例
-项目还提供了更多类型的属性操作，可在 `RiveDataBindingUsageExample.kt` 中查看：
+`ViewModelInstance` 同样提供字符串、布尔、枚举、触发器等访问器：
 
 ```kotlin
-val viewModel = helper.getViewModelByName("ClockViewModel")
-if (viewModel != null) {
-    helper.createDefaultInstance(viewModel, "clock")
-    helper.setNumberProperty("clock", "hours", 12.5f)
-    helper.setNumberProperty("clock", "minutes", 30f)
-    helper.fireTrigger("clock", "updateTime") // 触发 Rive trigger
-}
+val vmInstance = riveView.ensureViewModelBinding() ?: return
+vmInstance.getBooleanProperty("watchAlarm")?.value = true
+vmInstance.getStringProperty("city")?.value = "Shenzhen"
+vmInstance.getTriggerProperty("updateDisplay")?.trigger()
 ```
 
-利用这些 API，可在同一实例上写入字符串、布尔、枚举或嵌套属性（`setStringProperty`、`setBooleanProperty`、`setEnumProperty`、`setNestedNumberProperty`）。
+如需访问嵌套属性，可直接使用 `getNumberProperty("settings/display/brightness")`。
 
 ---
 
 ## 6. 调试与排查
-- `adb logcat | grep "RiveDataBinding\|RivePlayerUI"` 可查看自动绑定、属性扫描、写入失败等信息。
-- 若看到 `Number property not found`，请检查 Rive 文件内是否定义了对应属性名。
-- 若出现 `No State Machine or Artboard available for binding`，需在 Rive 编辑器中补充 State Machine。
-- 生命周期结束时别忘记调用 `bindingHelper.cleanup()` 清理缓存实例。
+- `adb logcat | grep "RivePlayerUI"`：查看绑定状态、缺失属性或降级信息。
+- **属性缺失**：日志若提示 `ViewModel property not found`，请在 `.riv` 文件中补充对应字段。
+- **绑定失败**：若 `ensureViewModelBinding()` 返回 `null`，说明 Rive 文件没有默认 ViewModel，可联系设计师添加，或继续依赖 state machine 输入。
+- **资源释放**：`DisposableEffect` 已统一调用 `view.stop()`，不再需要手动 `cleanup()`。
 
-通过以上代码示例，开发者可以快速在新的 Rive 动画场景中接入时间数据绑定，同时保留自动绑定与降级策略。EOF
+按照该模板即可在任意页面快速复用“时间 + 数据绑定”的写法，同时自动享受官方推荐的降级与性能优化策略。

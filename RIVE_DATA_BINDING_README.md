@@ -14,92 +14,54 @@
 
 ## 核心组件
 
-### 1. RiveDataBindingHelper
+### 1. `RivePreviewActivity` 内置绑定
 
-位置：`app/src/main/java/com/example/watchview/utils/RiveDataBindingHelper.kt`
+`RivePreviewActivity` 现在直接使用 Rive 官方 API 进行数据绑定：
 
-这是主要的数据绑定辅助类，提供了完整的数据绑定 API。
+- 通过 `RiveAnimationView.setRiveFile()` 加载 `.riv` 文件
+- 调用扩展函数 `ensureViewModelBinding()` 绑定默认 `ViewModelInstance`
+- 将实例缓存在 Compose 状态中，供 UI 和定时任务直接写入
 
-### 2. RiveDataBindingUsageExample
+### 2. `ensureViewModelBinding()` / `setNumberProperty()`
 
-位置：`app/src/main/java/com/example/watchview/utils/RiveDataBindingUsageExample.kt`
+在文件底部新增的扩展函数用于：
 
-包含各种使用示例，展示如何使用数据绑定功能。
+- 如果 Rive 已自动绑定实例则复用
+- 否则自动获取当前 artboard 的默认 ViewModel 并创建实例
+- 将实例应用到第一个 State Machine（或 artboard）
+- 提供 `ViewModelInstance.setNumberProperty()` 便捷地写入数值属性并记录缺失字段
 
 ## 基本使用方法
 
-### 1. 初始化数据绑定
+### 1. 绑定 ViewModelInstance
 
 ```kotlin
-val helper = RiveDataBindingHelper(riveView)
-helper.initialize()
+val riveView = RiveAnimationView(context)
+riveView.setRiveFile(RiveCoreFile(file.readBytes()))
+
+// 尝试复用/创建默认实例并绑定到 State Machine
+val instance = riveView.ensureViewModelBinding()
 ```
 
-### 2. 获取 ViewModel
+### 2. 写入属性（优先使用数据绑定）
 
 ```kotlin
-// 根据名称获取
-val viewModel = helper.getViewModelByName("WatchFaceViewModel")
+instance?.setNumberProperty("timeHour", currentHour, missingProperties)
+instance?.setNumberProperty("systemStatusBattery", batteryLevel, missingProperties)
 
-// 根据索引获取
-val viewModel = helper.getViewModelByIndex(0)
-
-// 获取默认 ViewModel
-val viewModel = helper.getDefaultViewModel()
+// 若实例为空（旧文件未配置 ViewModel），再退回 setNumberState()
+if (instance == null) {
+    riveView.setNumberState("State Machine 1", "timeHour", currentHour)
+}
 ```
 
-### 3. 创建 ViewModel 实例
+### 3. 清理
 
-```kotlin
-// 创建默认实例
-helper.createDefaultInstance(viewModel, "watchface")
+`DisposableEffect` 在 UI 销毁时会：
 
-// 根据名称创建实例
-helper.createInstanceByName(viewModel, "Instance1", "instance1")
-
-// 创建空白实例
-helper.createBlankInstance(viewModel, "blank")
-```
-
-### 4. 设置和获取属性
-
-```kotlin
-// 数字属性
-helper.setNumberProperty("watchface", "hour", 14.5f)
-val hour = helper.getNumberProperty("watchface", "hour")
-
-// 字符串属性
-helper.setStringProperty("watchface", "title", "My Watch")
-val title = helper.getStringProperty("watchface", "title")
-
-// 布尔属性
-helper.setBooleanProperty("watchface", "isVisible", true)
-val isVisible = helper.getBooleanProperty("watchface", "isVisible")
-
-// 枚举属性
-helper.setEnumProperty("theme", "colorScheme", "dark")
-val colorScheme = helper.getEnumProperty("theme", "colorScheme")
-```
-
-### 5. 触发器
-
-```kotlin
-helper.fireTrigger("watchface", "updateDisplay")
-```
-
-### 6. 嵌套属性
-
-```kotlin
-// 使用路径访问嵌套属性
-helper.setNestedNumberProperty("settings", "display/brightness", 0.8f)
-val brightness = helper.getNestedNumberProperty("settings", "display/brightness")
-```
-
-### 7. 清理资源
-
-```kotlin
-helper.cleanup()
-```
+- 移除 Rive 事件监听器
+- 停止 `RiveAnimationView`
+- 释放 `ViewModelInstance` 引用、防止持有旧属性
 
 ## 在项目中的集成
 
@@ -107,20 +69,18 @@ helper.cleanup()
 
 在 `RivePreviewActivity.kt` 中，数据绑定功能已经集成到 `RivePlayerUI` 组件中：
 
-1. **初始化**：当 `RiveAnimationView` 创建时，自动初始化数据绑定
-2. **默认实例**：自动创建默认 ViewModel 实例
-3. **属性更新**：同时使用传统状态机输入和数据绑定方式更新属性
-4. **资源清理**：在 Activity 销毁时自动清理数据绑定资源
+1. **自动绑定**：`ensureViewModelBinding()` 优先使用已经绑定的实例，否则自动创建默认实例并绑定
+2. **属性更新**：若绑定成功，仅通过 ViewModel 属性写入；若失败，再回退到传统 state machine 输入
+3. **节流机制**：利用 `RiveSnapshot` 避免重复写入相同值，减少 JNI 压力
+4. **资源清理**：在 Compose `DisposableEffect` 中停止视图并释放实例引用
 
 ### 日志输出
 
-数据绑定操作会产生详细的日志输出，标签为 `RiveDataBinding`，包括：
+数据绑定相关日志统一使用 `RivePlayerUI` 标签，可看到：
 
-- ViewModel 发现和创建
-- 实例创建状态
-- 属性设置和获取操作
-- 错误信息和警告
-- 可用枚举列表
+- 是否成功绑定/创建实例
+- 缺失的属性名称（只记录一次）
+- 回退至 state machine 输入的情况
 
 ## 错误处理
 

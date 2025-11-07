@@ -28,6 +28,7 @@ import kotlinx.coroutines.*
 import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
 import app.rive.runtime.kotlin.core.File as RiveCoreFile
+import app.rive.runtime.kotlin.core.ViewModelInstance
 import java.util.*
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -59,7 +60,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 import com.example.watchview.presentation.ui.ACTION_CLOSE_PREVIOUS_PREVIEW
-import com.example.watchview.utils.RiveDataBindingHelper
 
 private data class RiveSnapshot(
     val hour: Float,
@@ -75,9 +75,6 @@ class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
     private var riveView: RiveAnimationView? = null
     private lateinit var vibrator: Vibrator
-    
-    // 添加数据绑定辅助类
-    private var dataBindingHelper: RiveDataBindingHelper? = null
     
     // 添加错误计数器
     private var errorCount = 0
@@ -485,9 +482,6 @@ class RivePreviewActivity : ComponentActivity() {
                 it.removeEventListener(eventListener)
                 it.stop()
             }
-            // 清理数据绑定资源
-            dataBindingHelper?.cleanup()
-            dataBindingHelper = null
             riveView = null
         } catch (e: Exception) {
             Log.e("RivePreviewActivity", "Error in onDestroy", e)
@@ -514,9 +508,8 @@ fun RivePlayerUI(
     var currentDay by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH).toFloat()) }
     var currentWeek by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1f) }
     var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
-
-    var dataBindingHelper by remember { mutableStateOf<RiveDataBindingHelper?>(null) }
-    var isDataBindingInitialized by remember { mutableStateOf(false) }
+    var boundViewModelInstance by remember { mutableStateOf<ViewModelInstance?>(null) }
+    val missingViewModelProperties = remember { mutableSetOf<String>() }
     var lastSnapshot by remember { mutableStateOf<RiveSnapshot?>(null) }
 
     LaunchedEffect(Unit) {
@@ -552,37 +545,15 @@ fun RivePlayerUI(
                     addEventListener(eventListener)
 
                     try {
-                        val helper = RiveDataBindingHelper(this)
-                        val autoBindSuccess = helper.initializeWithAutoBind()
-
-                        if (autoBindSuccess) {
-                            dataBindingHelper = helper
-                            isDataBindingInitialized = true
-                            Log.i("RivePlayerUI", "Auto-binding completed successfully")
+                        boundViewModelInstance = ensureViewModelBinding()
+                        if (boundViewModelInstance != null) {
+                            Log.i("RivePlayerUI", "ViewModel instance ready for data binding")
                         } else {
-                            Log.w("RivePlayerUI", "Auto-binding failed, falling back to manual initialization")
-                            helper.initialize()
-                            dataBindingHelper = helper
-                            isDataBindingInitialized = false
-
-                            helper.getDefaultViewModel()?.let { defaultViewModel ->
-                                val defaultInstance = helper.createDefaultInstance(defaultViewModel, "default")
-                                if (defaultInstance != null) {
-                                    val bound = helper.bindInstanceToStateMachine("default")
-                                    if (!bound) {
-                                        Log.w("RivePlayerUI", "Manual fallback instance could not be bound to a State Machine")
-                                    } else {
-                                        Log.i("RivePlayerUI", "Manual fallback: Default ViewModel instance created and bound")
-                                    }
-                                } else {
-                                    Log.w("RivePlayerUI", "Manual fallback: failed to create default instance")
-                                }
-                            }
+                            Log.w("RivePlayerUI", "No ViewModel instance bound; falling back to state-machine inputs")
                         }
-
                     } catch (e: Exception) {
-                        Log.e("RivePlayerUI", "Error during data binding initialization", e)
-                        isDataBindingInitialized = false
+                        Log.e("RivePlayerUI", "Error while binding ViewModel instance", e)
+                        boundViewModelInstance = null
                     }
 
                     onRiveViewCreated(this)
@@ -627,7 +598,7 @@ fun RivePlayerUI(
                     }
                 }
 
-                val usingDataBinding = dataBindingHelper != null
+                val usingDataBinding = boundViewModelInstance != null
                 if (!usingDataBinding && smNames.isNotEmpty()) {
                     setNumberInputAcrossStateMachines("timeHour", currentHour)
                     setNumberInputAcrossStateMachines("timeMinute", currentMinute)
@@ -638,21 +609,14 @@ fun RivePlayerUI(
                     setNumberInputAcrossStateMachines("dateWeek", currentWeek)
                 }
 
-                dataBindingHelper?.let { helper ->
-                    val instanceKey = if (isDataBindingInitialized) helper.getAutoBoundInstanceKey() else "default"
-                    fun setNumberProperty(name: String, value: Float) {
-                        val success = helper.setNumberProperty(instanceKey, name, value)
-                        if (!success) {
-                            Log.d("RivePlayerUI", "Instance $instanceKey does not expose property: $name")
-                        }
-                    }
-                    setNumberProperty("timeHour", currentHour)
-                    setNumberProperty("timeMinute", currentMinute)
-                    setNumberProperty("timeSecond", currentSecond)
-                    setNumberProperty("systemStatusBattery", currentBattery)
-                    setNumberProperty("dateMonth", currentMonth)
-                    setNumberProperty("dateDay", currentDay)
-                    setNumberProperty("dateWeek", currentWeek)
+                boundViewModelInstance?.let { instance ->
+                    instance.setNumberProperty("timeHour", currentHour, missingViewModelProperties)
+                    instance.setNumberProperty("timeMinute", currentMinute, missingViewModelProperties)
+                    instance.setNumberProperty("timeSecond", currentSecond, missingViewModelProperties)
+                    instance.setNumberProperty("systemStatusBattery", currentBattery, missingViewModelProperties)
+                    instance.setNumberProperty("dateMonth", currentMonth, missingViewModelProperties)
+                    instance.setNumberProperty("dateDay", currentDay, missingViewModelProperties)
+                    instance.setNumberProperty("dateWeek", currentWeek, missingViewModelProperties)
                 }
             } catch (e: Exception) {
                 Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
@@ -667,8 +631,8 @@ fun RivePlayerUI(
                 view.removeEventListener(eventListener)
                 view.stop()
             }
-            dataBindingHelper?.cleanup()
-            dataBindingHelper = null
+            boundViewModelInstance = null
+            missingViewModelProperties.clear()
             riveViewRef = null
         }
     }
@@ -698,4 +662,43 @@ private fun isExternalStorageFile(filePath: String): Boolean {
         Log.e("RivePreviewActivity", "Error checking external storage path", e)
         false
     }
-} 
+}
+
+private fun RiveAnimationView.ensureViewModelBinding(): ViewModelInstance? {
+    val controller = controller ?: return null
+    controller.stateMachines.firstOrNull()?.viewModelInstance?.let { return it }
+
+    val artboard = controller.activeArtboard ?: return null
+    val file = file ?: return null
+    val defaultViewModel = file.defaultViewModelForArtboard(artboard) ?: return null
+    val instance = defaultViewModel.createDefaultInstance() ?: return null
+
+    val stateMachine = controller.stateMachines.firstOrNull()
+    if (stateMachine != null) {
+        stateMachine.viewModelInstance = instance
+    } else {
+        artboard.viewModelInstance = instance
+    }
+    return instance
+}
+
+private fun ViewModelInstance.setNumberProperty(
+    propertyName: String,
+    value: Float,
+    missingProperties: MutableSet<String>
+) {
+    try {
+        val property = getNumberProperty(propertyName)
+        if (property != null) {
+            if (property.value != value) {
+                property.value = value
+            }
+        } else if (missingProperties.add(propertyName)) {
+            Log.d("RivePlayerUI", "ViewModel property not found: $propertyName")
+        }
+    } catch (e: Exception) {
+        if (missingProperties.add(propertyName)) {
+            Log.w("RivePlayerUI", "Unexpected error accessing property: $propertyName", e)
+        }
+    }
+}

@@ -1,20 +1,13 @@
 # Data Binding 自动绑定测试指南
 
-## 已实现的自动绑定功能
+## 最新实现概要
 
-我已经为项目添加了完整的自动绑定机制，主要改动如下：
+`RivePreviewActivity` 已全面改为官方推荐的绑定流程：
 
-### 1. RiveDataBindingHelper 新增功能
-
-- `bindInstanceToStateMachine(instanceKey: String)` - 将ViewModel实例绑定到State Machine
-- `initializeWithAutoBind()` - 一键自动绑定功能
-- `getAutoBoundInstanceKey()` - 获取自动绑定的实例key ("auto_default")
-
-### 2. RivePreviewActivity 改进
-
-- 使用 `initializeWithAutoBind()` 替代手动初始化
-- 添加了降级处理机制，自动绑定失败时回退到原有方式
-- 智能选择实例key，优先使用自动绑定实例
+1. `RiveAnimationView` 在加载 `.riv` 文件后调用 `ensureViewModelBinding()`。
+2. 如果 Rive 已自动绑定实例则直接复用，否则自动创建默认实例并绑定到第一个 State Machine。
+3. `RivePlayerUI` 通过 `ViewModelInstance.setNumberProperty()` 写入属性，仅在实例缺失时才退回 `setNumberState()`。
+4. `DisposableEffect` 在 Compose 退出时统一停止视图并清理实例，避免旧引用导致的“自动绑定失效”问题。
 
 ## 如何验证自动绑定是否生效
 
@@ -63,32 +56,18 @@ safeSetNumberState("dateWeek", currentWeek)
 5. 如果时间和电量数据仍然更新，说明data binding生效
 6. 如果动画停止更新，说明data binding未生效，需要进一步调试
 
-### 方法3：检查ViewModel实例绑定状态
+### 方法3：确认绑定实例
 
-可以添加一个临时的调试方法：
-
-在 `RiveDataBindingHelper.kt` 中添加：
-
-```kotlin
-fun checkBindingStatus(): String {
-    return try {
-        val controller = riveView.controller
-        val stateMachine = controller?.stateMachines?.firstOrNull()
-        val artboard = controller?.activeArtboard
-        
-        val smBinding = stateMachine?.viewModelInstance != null
-        val artboardBinding = artboard?.viewModelInstance != null
-        
-        "StateMachine绑定: $smBinding, Artboard绑定: $artboardBinding"
-    } catch (e: Exception) {
-        "检查绑定状态出错: ${e.message}"
-    }
-}
+在 `RivePreviewActivity.kt` 中，`ensureViewModelBinding()` 会在成功时输出：
 ```
-
-然后在初始化后调用：
+RivePlayerUI: ViewModel instance ready for data binding
+```
+若需要进一步确认，可在 `AndroidView` 的 `factory` 中临时加入：
 ```kotlin
-Log.i("RiveDataBinding", helper.checkBindingStatus())
+Log.i(
+    "RivePlayerUI",
+    "StateMachine binding: ${controller.stateMachines.firstOrNull()?.viewModelInstance != null}"
+)
 ```
 
 ## 预期效果
@@ -107,16 +86,14 @@ Log.i("RiveDataBinding", helper.checkBindingStatus())
 
 如果自动绑定失败，可能的原因：
 
-1. **本地AAR版本问题** - 检查 `kotlin-release.aar` 是否支持所有必要的API
-2. **ViewModel不存在** - Rive文件中没有定义ViewModel
-3. **State Machine问题** - Rive文件中没有State Machine或State Machine配置有问题
-4. **时序问题** - 在RiveView完全初始化前尝试绑定
+1. **Rive 文件未定义 ViewModel**：`defaultViewModelForArtboard` 返回 `null`，请让设计稿补齐 ViewModel。
+2. **State Machine 为空**：若 `.riv` 没有 State Machine，只能把实例绑定到 Artboard，这样属性生效但无法驱动状态切换。
+3. **旧版 runtime**：请确认 `app.rive:rive-android:10.4.5` 及以上版本，并重新同步依赖。
+4. **属性名不匹配**：日志中若出现 `ViewModel property not found`，说明 `.riv` 中未暴露该字段，需要与设计师核对命名。
 
 ## 回退机制
 
-代码已实现完整的回退机制：
-- 自动绑定失败时，自动回退到原有的手动初始化方式
-- 传统状态机输入始终保持作为备用方案
-- 确保应用始终能够正常工作
+若 `ensureViewModelBinding()` 返回 `null`，`RivePlayerUI` 会自动退回到 `setNumberState()` 的传统写法。
+因此即使 ViewModel 缺失，动画也能继续运行，只是无法享受数据绑定带来的属性映射能力。
 
 这样即使data binding有问题，也不会影响应用的基本功能。
