@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -59,6 +60,16 @@ import kotlinx.coroutines.launch
 import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 import com.example.watchview.presentation.ui.ACTION_CLOSE_PREVIOUS_PREVIEW
 import com.example.watchview.utils.RiveDataBindingHelper
+
+private data class RiveSnapshot(
+    val hour: Float,
+    val minute: Float,
+    val second: Float,
+    val battery: Float,
+    val month: Float,
+    val day: Float,
+    val week: Float
+)
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
@@ -506,6 +517,7 @@ fun RivePlayerUI(
 
     var dataBindingHelper by remember { mutableStateOf<RiveDataBindingHelper?>(null) }
     var isDataBindingInitialized by remember { mutableStateOf(false) }
+    var lastSnapshot by remember { mutableStateOf<RiveSnapshot?>(null) }
 
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -517,13 +529,16 @@ fun RivePlayerUI(
                 currentMonth = (calendar.get(Calendar.MONTH) + 1).toFloat()
                 currentDay = calendar.get(Calendar.DAY_OF_MONTH).toFloat()
                 currentWeek = (calendar.get(Calendar.DAY_OF_WEEK) - 1).toFloat()
-                currentBattery = batteryLevel
                 delay(1000L)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 Log.e("RivePlayerUI", "Error updating time", e)
             }
         }
+    }
+
+    LaunchedEffect(batteryLevel) {
+        currentBattery = batteryLevel
     }
 
     AndroidView(
@@ -551,8 +566,17 @@ fun RivePlayerUI(
                             isDataBindingInitialized = false
 
                             helper.getDefaultViewModel()?.let { defaultViewModel ->
-                                helper.createDefaultInstance(defaultViewModel, "default")
-                                Log.i("RivePlayerUI", "Manual fallback: Default ViewModel instance created")
+                                val defaultInstance = helper.createDefaultInstance(defaultViewModel, "default")
+                                if (defaultInstance != null) {
+                                    val bound = helper.bindInstanceToStateMachine("default")
+                                    if (!bound) {
+                                        Log.w("RivePlayerUI", "Manual fallback instance could not be bound to a State Machine")
+                                    } else {
+                                        Log.i("RivePlayerUI", "Manual fallback: Default ViewModel instance created and bound")
+                                    }
+                                } else {
+                                    Log.w("RivePlayerUI", "Manual fallback: failed to create default instance")
+                                }
                             }
                         }
 
@@ -573,40 +597,62 @@ fun RivePlayerUI(
                 riveViewRef = riveView
                 val artboard = riveView.file?.firstArtboard
                 val smNames = artboard?.stateMachineNames ?: emptyList()
+                val snapshot = RiveSnapshot(
+                    hour = currentHour,
+                    minute = currentMinute,
+                    second = currentSecond,
+                    battery = currentBattery,
+                    month = currentMonth,
+                    day = currentDay,
+                    week = currentWeek
+                )
+                if (snapshot == lastSnapshot) {
+                    return@AndroidView
+                }
+                lastSnapshot = snapshot
 
-                fun safeSetNumberState(inputName: String, value: Float): Boolean {
-                    try {
-                        val machineName = smNames.firstOrNull()
-                        val stateMachine = machineName?.let { artboard?.stateMachine(it) }
-                        if (machineName != null && stateMachine?.inputs?.any { it.name == inputName } == true) {
-                            riveView.setNumberState(machineName, inputName, value)
-                            return true
-                        }
-                    } catch (e: Exception) {
-                        Log.e("RivePlayerUI", "Error setting state: $inputName = $value", e)
+                fun setNumberInputAcrossStateMachines(inputName: String, value: Float) {
+                    val targetMachine = smNames.firstOrNull { machineName ->
+                        val stateMachine = artboard?.stateMachine(machineName)
+                        stateMachine?.inputs?.any { it.name == inputName } == true
                     }
-                    return false
+                    if (targetMachine != null) {
+                        try {
+                            riveView.setNumberState(targetMachine, inputName, value)
+                        } catch (e: Exception) {
+                            Log.e("RivePlayerUI", "Error setting $inputName on $targetMachine", e)
+                        }
+                    } else {
+                        Log.d("RivePlayerUI", "No state machine exposes input: $inputName")
+                    }
                 }
 
-                if (smNames.isNotEmpty()) {
-                    safeSetNumberState("timeHour", currentHour)
-                    safeSetNumberState("timeMinute", currentMinute)
-                    safeSetNumberState("timeSecond", currentSecond)
-                    safeSetNumberState("systemStatusBattery", currentBattery)
-                    safeSetNumberState("dateMonth", currentMonth)
-                    safeSetNumberState("dateDay", currentDay)
-                    safeSetNumberState("dateWeek", currentWeek)
+                val usingDataBinding = dataBindingHelper != null
+                if (!usingDataBinding && smNames.isNotEmpty()) {
+                    setNumberInputAcrossStateMachines("timeHour", currentHour)
+                    setNumberInputAcrossStateMachines("timeMinute", currentMinute)
+                    setNumberInputAcrossStateMachines("timeSecond", currentSecond)
+                    setNumberInputAcrossStateMachines("systemStatusBattery", currentBattery)
+                    setNumberInputAcrossStateMachines("dateMonth", currentMonth)
+                    setNumberInputAcrossStateMachines("dateDay", currentDay)
+                    setNumberInputAcrossStateMachines("dateWeek", currentWeek)
                 }
 
                 dataBindingHelper?.let { helper ->
                     val instanceKey = if (isDataBindingInitialized) helper.getAutoBoundInstanceKey() else "default"
-                    helper.setNumberProperty(instanceKey, "timeHour", currentHour)
-                    helper.setNumberProperty(instanceKey, "timeMinute", currentMinute)
-                    helper.setNumberProperty(instanceKey, "timeSecond", currentSecond)
-                    helper.setNumberProperty(instanceKey, "systemStatusBattery", currentBattery)
-                    helper.setNumberProperty(instanceKey, "dateMonth", currentMonth)
-                    helper.setNumberProperty(instanceKey, "dateDay", currentDay)
-                    helper.setNumberProperty(instanceKey, "dateWeek", currentWeek)
+                    fun setNumberProperty(name: String, value: Float) {
+                        val success = helper.setNumberProperty(instanceKey, name, value)
+                        if (!success) {
+                            Log.d("RivePlayerUI", "Instance $instanceKey does not expose property: $name")
+                        }
+                    }
+                    setNumberProperty("timeHour", currentHour)
+                    setNumberProperty("timeMinute", currentMinute)
+                    setNumberProperty("timeSecond", currentSecond)
+                    setNumberProperty("systemStatusBattery", currentBattery)
+                    setNumberProperty("dateMonth", currentMonth)
+                    setNumberProperty("dateDay", currentDay)
+                    setNumberProperty("dateWeek", currentWeek)
                 }
             } catch (e: Exception) {
                 Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
@@ -617,6 +663,12 @@ fun RivePlayerUI(
 
     DisposableEffect(Unit) {
         onDispose {
+            riveViewRef?.let { view ->
+                view.removeEventListener(eventListener)
+                view.stop()
+            }
+            dataBindingHelper?.cleanup()
+            dataBindingHelper = null
             riveViewRef = null
         }
     }
