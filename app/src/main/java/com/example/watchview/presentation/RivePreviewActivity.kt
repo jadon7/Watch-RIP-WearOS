@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.*
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -511,6 +512,13 @@ fun RivePlayerUI(
     var boundViewModelInstance by remember { mutableStateOf<ViewModelInstance?>(null) }
     val missingViewModelProperties = remember { mutableSetOf<String>() }
     var lastSnapshot by remember { mutableStateOf<RiveSnapshot?>(null) }
+    val riveBytes by produceState<ByteArray?>(initialValue = null, key1 = file.absolutePath) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { file.readBytes() }
+                .onFailure { Log.e("RivePlayerUI", "Failed to read Rive file: ${file.absolutePath}", it) }
+                .getOrNull()
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -534,12 +542,23 @@ fun RivePlayerUI(
         currentBattery = batteryLevel
     }
 
+    val riveData = riveBytes
+    if (riveData == null) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            BasicText(text = "Loading Rive...")
+        }
+        return
+    }
+
     AndroidView(
         factory = { context ->
             try {
                 RiveAnimationView(context).apply {
                     riveViewRef = this
-                    val riveFile = RiveCoreFile(file.readBytes())
+                    val riveFile = RiveCoreFile(riveData)
                     setRiveFile(riveFile)
                     autoplay = true
                     addEventListener(eventListener)
