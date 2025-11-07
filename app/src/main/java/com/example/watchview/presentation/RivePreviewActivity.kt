@@ -1,26 +1,20 @@
 package com.example.watchview.presentation
 
 import android.os.Bundle
-import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.*
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -30,7 +24,6 @@ import androidx.compose.ui.window.SecureFlagPolicy
 import com.example.watchview.presentation.theme.WatchViewTheme
 import java.io.File
 import kotlinx.coroutines.*
-import androidx.core.view.InputDeviceCompat
 import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
 import app.rive.runtime.kotlin.core.File as RiveCoreFile
@@ -40,12 +33,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.compose.runtime.collectAsState
 import android.util.Log
@@ -70,12 +59,6 @@ import kotlinx.coroutines.launch
 import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 import com.example.watchview.presentation.ui.ACTION_CLOSE_PREVIOUS_PREVIEW
 import com.example.watchview.utils.RiveDataBindingHelper
-import kotlin.math.abs
-import kotlin.math.roundToInt
-
-private const val DEVICE_KNOB_SETTLE_DELAY_MS = 120L
-
-data class RotaryScrollEvent(val delta: Float, val uptimeMillis: Long)
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
@@ -92,12 +75,6 @@ class RivePreviewActivity : ComponentActivity() {
     // 添加电池电量状态
     private val _batteryLevel = MutableStateFlow(0f)
     val batteryLevel: StateFlow<Float> = _batteryLevel.asStateFlow()
-    
-    // 旋钮事件流
-    private val rotaryEvents = MutableSharedFlow<RotaryScrollEvent>(
-        extraBufferCapacity = 32,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
     
     // 添加协程作用域
     private val activityScope = MainScope()
@@ -471,7 +448,6 @@ class RivePreviewActivity : ComponentActivity() {
                         RivePlayerUI(
                             file = File(filePath),
                             batteryLevel = batteryState,
-                            rotaryEvents = rotaryEvents.asSharedFlow(),
                             onRiveViewCreated = { view -> riveView = view },
                             eventListener = eventListener
                         )
@@ -482,19 +458,6 @@ class RivePreviewActivity : ComponentActivity() {
             Log.e("RivePreviewActivity", "Error in onCreate", e)
             handleError(e)
         }
-    }
-
-    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-        if (event.action == MotionEvent.ACTION_SCROLL &&
-            event.isFromSource(InputDeviceCompat.SOURCE_ROTARY_ENCODER)
-        ) {
-            val delta = -event.getAxisValue(MotionEvent.AXIS_SCROLL)
-            if (!rotaryEvents.tryEmit(RotaryScrollEvent(delta, event.eventTime))) {
-                Log.d("RivePreviewActivity", "Rotary event dropped (buffer full)")
-            }
-            return true
-        }
-        return super.onGenericMotionEvent(event)
     }
 
     override fun onDestroy() {
@@ -529,7 +492,6 @@ class RivePreviewActivity : ComponentActivity() {
 fun RivePlayerUI(
     file: java.io.File,
     batteryLevel: Float,
-    rotaryEvents: Flow<RotaryScrollEvent>,
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener
 ) {
@@ -544,42 +506,6 @@ fun RivePlayerUI(
 
     var dataBindingHelper by remember { mutableStateOf<RiveDataBindingHelper?>(null) }
     var isDataBindingInitialized by remember { mutableStateOf(false) }
-    val deviceKnobAnim = remember { Animatable(1f) }
-    var deviceKnobTarget by remember { mutableFloatStateOf(1f) }
-    var deviceKnobPosition by remember { mutableFloatStateOf(1f) }
-    var settleJob by remember { mutableStateOf<Job?>(null) }
-    val knobDeltaMultiplier = remember { 1.2f }
-    var lastSentDeviceKnob by remember { mutableFloatStateOf(1f) }
-    var lastSendSuccessful by remember { mutableStateOf(false) }
-    var initialSynced by remember { mutableStateOf(false) }
-
-    LaunchedEffect(rotaryEvents) {
-        rotaryEvents.collect { event ->
-            val delta = event.delta * knobDeltaMultiplier
-            if (delta == 0f) return@collect
-            deviceKnobAnim.stop()
-            deviceKnobTarget += delta
-            val immediateTarget = deviceKnobTarget
-            deviceKnobAnim.snapTo(immediateTarget)
-            settleJob?.cancel()
-            settleJob = launch {
-                val settleTarget = immediateTarget
-                delay(DEVICE_KNOB_SETTLE_DELAY_MS)
-                if (deviceKnobTarget == settleTarget) {
-                    val rounded = settleTarget.roundToInt().toFloat()
-                    deviceKnobTarget = rounded
-                    deviceKnobAnim.snapTo(rounded)
-                }
-            }
-        }
-    }
-
-    LaunchedEffect(deviceKnobAnim) {
-        snapshotFlow { deviceKnobAnim.value }
-            .collect { value ->
-                deviceKnobPosition = value
-            }
-    }
 
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -647,7 +573,6 @@ fun RivePlayerUI(
                 riveViewRef = riveView
                 val artboard = riveView.file?.firstArtboard
                 val smNames = artboard?.stateMachineNames ?: emptyList()
-                var writeSucceeded = false
 
                 fun safeSetNumberState(inputName: String, value: Float): Boolean {
                     try {
@@ -671,13 +596,9 @@ fun RivePlayerUI(
                     safeSetNumberState("dateMonth", currentMonth)
                     safeSetNumberState("dateDay", currentDay)
                     safeSetNumberState("dateWeek", currentWeek)
-                    val deviceSet = safeSetNumberState("deviceKnob", deviceKnobPosition)
-                    if (deviceSet) {
-                        writeSucceeded = true
-                    }
                 }
 
-                val bindingSuccess = dataBindingHelper?.let { helper ->
+                dataBindingHelper?.let { helper ->
                     val instanceKey = if (isDataBindingInitialized) helper.getAutoBoundInstanceKey() else "default"
                     helper.setNumberProperty(instanceKey, "timeHour", currentHour)
                     helper.setNumberProperty(instanceKey, "timeMinute", currentMinute)
@@ -686,18 +607,6 @@ fun RivePlayerUI(
                     helper.setNumberProperty(instanceKey, "dateMonth", currentMonth)
                     helper.setNumberProperty(instanceKey, "dateDay", currentDay)
                     helper.setNumberProperty(instanceKey, "dateWeek", currentWeek)
-                    helper.setNumberProperty(instanceKey, "deviceKnob", deviceKnobPosition)
-                } ?: false
-
-                if (bindingSuccess) {
-                    writeSucceeded = true
-                }
-
-                if (writeSucceeded) {
-                    lastSentDeviceKnob = deviceKnobPosition
-                    lastSendSuccessful = true
-                } else {
-                    lastSendSuccessful = false
                 }
             } catch (e: Exception) {
                 Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
@@ -708,27 +617,7 @@ fun RivePlayerUI(
 
     DisposableEffect(Unit) {
         onDispose {
-            settleJob?.cancel()
             riveViewRef = null
-        }
-    }
-
-    LaunchedEffect(dataBindingHelper, isDataBindingInitialized, riveViewRef) {
-        val helper = dataBindingHelper ?: return@LaunchedEffect
-        if (initialSynced) return@LaunchedEffect
-        try {
-            val key = if (isDataBindingInitialized) helper.getAutoBoundInstanceKey() else "default"
-            val initialValue = helper.getNumberProperty(key, "deviceKnob")
-            if (initialValue != null && !initialValue.isNaN()) {
-                deviceKnobTarget = initialValue
-                deviceKnobAnim.snapTo(initialValue)
-                deviceKnobPosition = initialValue
-                lastSentDeviceKnob = initialValue
-                lastSendSuccessful = true
-                initialSynced = true
-            }
-        } catch (e: Exception) {
-            Log.d("RivePlayerUI", "Initial deviceKnob sync failed", e)
         }
     }
 }

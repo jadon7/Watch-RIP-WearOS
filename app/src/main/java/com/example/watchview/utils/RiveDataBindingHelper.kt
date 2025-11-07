@@ -642,8 +642,7 @@ class RiveDataBindingHelper(private val riveView: RiveAnimationView) {
                 "visible", "enabled", "active", "selected",
                 "color", "backgroundColor", "textColor",
                 "width", "height", "size",
-                "deviceKnob", "deviceKnobPage", "deviceKnobProgress", "deviceKnobPercent",
-                "deviceKnobPageCount", "crownValue", "dial"
+                "crownValue", "dial"
             )
             
             val allCommonProperties = commonTimeProperties + commonDateProperties + 
