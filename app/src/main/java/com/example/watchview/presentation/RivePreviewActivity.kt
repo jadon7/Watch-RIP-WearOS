@@ -38,7 +38,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.compose.runtime.collectAsState
@@ -90,7 +92,9 @@ class RivePreviewActivity : ComponentActivity() {
     private var riveView: RiveAnimationView? = null
     private lateinit var vibrator: Vibrator
     private lateinit var watchKeyController: WatchKeyController
-    private val stemKeyDispatcher = StemKeyDispatcher()
+    private val activityScope = MainScope()
+    private val crownTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val stemKeyDispatcher = StemKeyDispatcher { emitCrownTrigger() }
     private val powerKeyDispatcher = PowerKeyDispatcher()
     
     // 添加错误计数器
@@ -102,7 +106,6 @@ class RivePreviewActivity : ComponentActivity() {
     val batteryLevel: StateFlow<Float> = _batteryLevel.asStateFlow()
     
     // 添加协程作用域
-    private val activityScope = MainScope()
 
     // 添加 Rive 事件监听器
     private val eventListener = object : RiveFileController.RiveEventListener {
@@ -485,6 +488,7 @@ class RivePreviewActivity : ComponentActivity() {
                             file = File(filePath),
                             batteryLevel = batteryState,
                             bindingConfig = bindingConfig,
+                            crownTriggerFlow = crownTriggerFlow,
                             onRiveViewCreated = { view -> riveView = view },
                             eventListener = eventListener
                         )
@@ -551,6 +555,12 @@ class RivePreviewActivity : ComponentActivity() {
     override fun onBackPressed() {
         super.onBackPressed()
     }
+
+    private fun emitCrownTrigger() {
+        activityScope.launch {
+            crownTriggerFlow.emit(Unit)
+        }
+    }
 }
 
 @Composable
@@ -558,6 +568,7 @@ private fun RivePlayerUI(
     file: java.io.File,
     batteryLevel: Float,
     bindingConfig: RiveBindingConfig,
+    crownTriggerFlow: SharedFlow<Unit>,
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener
 ) {
@@ -661,6 +672,12 @@ private fun RivePlayerUI(
         },
         modifier = Modifier.fillMaxSize()
     )
+
+    LaunchedEffect(crownTriggerFlow, runtimeSession) {
+        crownTriggerFlow.collect {
+            runtimeSession.fireTrigger("keyCrown")
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -872,6 +889,15 @@ private class RiveRuntimeSession(
             "[write] target=$target field=$propertyName value=$value mode=${config.mode.wireValue}$suffix"
         )
     }
+
+    fun fireTrigger(triggerName: String) {
+        val viewModel = viewModelInstance
+        if (viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY) {
+            viewModel.triggerProperty(triggerName, this)
+        } else {
+            Log.w(TAG_BINDING, "[$filePath] Unable to fire trigger=$triggerName; no ViewModel bound")
+        }
+    }
 }
 
 private fun RiveAnimationView.pushNumberInputAcrossStateMachines(
@@ -984,7 +1010,9 @@ private fun ViewModelInstance.triggerProperty(
     }
 }
 
-private class StemKeyDispatcher {
+private class StemKeyDispatcher(
+    private val onTrigger: () -> Unit
+) {
     private var lastDownTimestamp = 0L
 
     fun onKeyDown(event: KeyEvent): Boolean {
@@ -996,6 +1024,7 @@ private class StemKeyDispatcher {
     fun onKeyUp(event: KeyEvent): Boolean {
         val pressDuration = event.eventTime - lastDownTimestamp
         Log.d(TAG_STEM_KEY, "Stem key up after ${pressDuration}ms (TODO: trigger action).")
+        onTrigger()
         return true
     }
 }
