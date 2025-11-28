@@ -14,54 +14,78 @@
 
 ## 核心组件
 
-### 1. `RivePreviewActivity` 内置绑定
+### 1. `RiveRuntimeSession`
 
-`RivePreviewActivity` 现在直接使用 Rive 官方 API 进行数据绑定：
+`RivePreviewActivity` 现在通过 `RiveRuntimeSession` 统一管理文件会话、输入缓存、缺失属性和监听器。每个 `.riv` 文件都会创建独立的 session：
 
-- 通过 `RiveAnimationView.setRiveFile()` 加载 `.riv` 文件
-- 调用扩展函数 `ensureViewModelBinding()` 绑定默认 `ViewModelInstance`
-- 将实例缓存在 Compose 状态中，供 UI 和定时任务直接写入
+- 负责在 Compose 层绑定/释放 `RiveAnimationView`
+- 根据配置（ViewModel 名称、实例名称、绑定模式）选择合适的 ViewModel
+- 追踪 `RiveSnapshot` 防止重复写入，并在属性缺失时自动降级
+- 提供 `registerObserver()`、`notifyObservers()` 让调用方监听属性变化
 
-### 2. `ensureViewModelBinding()` / `setNumberProperty()`
+### 2. `RiveBindingConfig / RiveBindingMode`
 
-在文件底部新增的扩展函数用于：
+- 新增 Intent/设置入口：
+  - `EXTRA_RIVE_VIEWMODEL_NAME`
+  - `EXTRA_RIVE_INSTANCE_NAME`
+  - `EXTRA_RIVE_BINDING_MODE`（`viewmodel_only` / `state_machine_only` / `hybrid`）
+- `RiveBindingConfig` 会被传入 `RivePlayerUI`，确保 UI 与 session 获得同一份配置。
+- 绑定模式影响写入策略：`hybrid` 仅对缺失字段走 state machine，`state_machine_only` 永远跳过 ViewModel。
 
-- 如果 Rive 已自动绑定实例则复用
-- 否则自动获取当前 artboard 的默认 ViewModel 并创建实例
-- 将实例应用到第一个 State Machine（或 artboard）
-- 提供 `ViewModelInstance.setNumberProperty()` 便捷地写入数值属性并记录缺失字段
+### 3. 多属性 helper
+
+文件底部提供 `ViewModelInstance` 扩展函数：
+
+- `setNumberProperty` / `setBooleanProperty` / `setStringProperty`
+- `triggerProperty`
+
+所有 helper 会记录缺失字段、触发日志与监听器，并在成功写入时移除“缺失”标记。
 
 ## 基本使用方法
 
-### 1. 绑定 ViewModelInstance
+### 1. 创建 session 与配置
 
 ```kotlin
-val riveView = RiveAnimationView(context)
-riveView.setRiveFile(RiveCoreFile(file.readBytes()))
-
-// 尝试复用/创建默认实例并绑定到 State Machine
-val instance = riveView.ensureViewModelBinding()
-```
-
-### 2. 写入属性（优先使用数据绑定）
-
-```kotlin
-instance?.setNumberProperty("timeHour", currentHour, missingProperties)
-instance?.setNumberProperty("systemStatusBattery", batteryLevel, missingProperties)
-
-// 若实例为空（旧文件未配置 ViewModel），再退回 setNumberState()
-if (instance == null) {
-    riveView.setNumberState("State Machine 1", "timeHour", currentHour)
+val config = RiveBindingConfig(
+    viewModelName = intent.getStringExtra(EXTRA_RIVE_VIEWMODEL_NAME),
+    instanceName = intent.getStringExtra(EXTRA_RIVE_INSTANCE_NAME),
+    mode = intent.getStringExtra(EXTRA_RIVE_BINDING_MODE)?.toRiveBindingMode()
+        ?: RiveBindingMode.HYBRID
+)
+val session = remember(file.absolutePath, config) {
+    RiveRuntimeSession(file.absolutePath, config)
 }
 ```
 
+### 2. 绑定 ViewModel 与写入
+
+```kotlin
+AndroidView(factory = { context ->
+    RiveAnimationView(context).apply {
+        setRiveFile(RiveCoreFile(bytes))
+        autoplay = true
+        session.attachView(this)
+        session.bindViewModelIfNeeded(this)
+    }
+}, update = { riveView ->
+    session.applySnapshot(riveView, snapshot) // snapshot 包含时间/电量
+})
+```
+
+session 会自动：
+- 将数值/布尔/字符串/触发器写入 ViewModel；
+- 当属性缺失时，将值同步到所有播放中的 state machine；
+- 通过 `registerObserver()` 将写入通知到调试 UI。
+
 ### 3. 清理
 
-`DisposableEffect` 在 UI 销毁时会：
+```kotlin
+DisposableEffect(session) {
+    onDispose { session.dispose() }
+}
+```
 
-- 移除 Rive 事件监听器
-- 停止 `RiveAnimationView`
-- 释放 `ViewModelInstance` 引用、防止持有旧属性
+session 会解除监听器、清空输入缓存、释放 ViewModel 引用，确保切换 `.riv` 时互不干扰。
 
 ## 在项目中的集成
 
@@ -69,18 +93,19 @@ if (instance == null) {
 
 在 `RivePreviewActivity.kt` 中，数据绑定功能已经集成到 `RivePlayerUI` 组件中：
 
-1. **自动绑定**：`ensureViewModelBinding()` 优先使用已经绑定的实例，否则自动创建默认实例并绑定
-2. **属性更新**：若绑定成功，仅通过 ViewModel 属性写入；若失败，再回退到传统 state machine 输入
-3. **节流机制**：利用 `RiveSnapshot` 避免重复写入相同值，减少 JNI 压力
-4. **资源清理**：在 Compose `DisposableEffect` 中停止视图并释放实例引用
+1. **配置解析**：在 `onCreate` 中解析 Intent extras，形成 `RiveBindingConfig`
+2. **Session 驱动**：`RivePlayerUI` 使用 `remember(file, config)` 生成 session，并在 `DisposableEffect` 中释放
+3. **多实例同步**：`RiveRuntimeSession.applySnapshot()` 会遍历 `playingStateMachines`，把值写入所有包含目标输入的 state machine
+4. **属性监听**：默认监听 `systemStatusBattery`，开发者可通过 `registerObserver` 添加更多调试管道
+5. **资源清理**：`session.dispose()` 统一移除监听器、ViewModel 实例与输入缓存
 
 ### 日志输出
 
-数据绑定相关日志统一使用 `RivePlayerUI` 标签，可看到：
+数据绑定相关日志统一使用以下标签：
 
-- 是否成功绑定/创建实例
-- 缺失的属性名称（只记录一次）
-- 回退至 state machine 输入的情况
+- `RiveBindingSession`：Session 生命周期、绑定策略、配置回退
+- `RiveBinding`：每次写入/降级、缺失属性、异常
+- `RiveBindingListener`：通过 `registerObserver()` 订阅的属性回调
 
 ## 错误处理
 

@@ -80,7 +80,7 @@ dependencies {
     
     // 第三方库依赖
     implementation("com.google.accompanist:accompanist-pager:0.28.0")  // 分页组件
-    implementation("app.rive:rive-android:10.5.2    ")
+    implementation("app.rive:rive-android:10.5.2")
     implementation("androidx.startup:startup-runtime:1.1.1")           // App Startup
     implementation("com.getkeepsafe.relinker:relinker:1.4.5")          // Rive 需要的 ReLinker 库
 }
