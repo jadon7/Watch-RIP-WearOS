@@ -896,6 +896,7 @@ private class RiveRuntimeSession(
 
     fun fireTrigger(triggerName: String) {
         if (config.mode == RiveBindingMode.STATE_MACHINE_ONLY) {
+            Log.i(TAG_BINDING, "[$filePath] Trigger $triggerName -> state machine (mode STATE_MACHINE_ONLY)")
             riveView?.pushTriggerAcrossStateMachines(triggerName, this)
             return
         }
@@ -903,21 +904,27 @@ private class RiveRuntimeSession(
         val viewModelReady = viewModelInstance != null
         if (!viewModelReady) {
             pendingTriggers.add(triggerName)
-            Log.i(TAG_BINDING, "[$filePath] Queue trigger=$triggerName until ViewModel binds")
+            Log.i(TAG_BINDING, "[$filePath] Queue trigger=$triggerName (ViewModel not bound yet)")
             return
         }
 
         val handled = dispatchTriggerToViewModel(triggerName)
-        if (handled) return
+        if (handled) {
+            Log.i(TAG_BINDING, "[$filePath] Trigger $triggerName fired via ViewModel")
+            return
+        }
 
         val canFallback = config.mode != RiveBindingMode.VIEWMODEL_ONLY
         if (canFallback) {
             val view = riveView
             if (view != null) {
+                Log.i(TAG_BINDING, "[$filePath] Trigger $triggerName fallback to state machine input")
                 view.pushTriggerAcrossStateMachines(triggerName, this)
             } else {
                 Log.w(TAG_BINDING, "[$filePath] Trigger $triggerName dropped; view not attached")
             }
+        } else {
+            Log.w(TAG_BINDING, "[$filePath] Trigger $triggerName not found in ViewModel and fallback disabled")
         }
     }
 
@@ -933,6 +940,8 @@ private class RiveRuntimeSession(
         queued.forEach { trigger ->
             if (!dispatchTriggerToViewModel(trigger)) {
                 Log.w(TAG_BINDING, "[$filePath] Pending trigger $trigger not found in ViewModel")
+            } else {
+                Log.i(TAG_BINDING, "[$filePath] Drained pending trigger $trigger")
             }
         }
     }
