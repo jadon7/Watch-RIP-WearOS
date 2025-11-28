@@ -891,11 +891,19 @@ private class RiveRuntimeSession(
     }
 
     fun fireTrigger(triggerName: String) {
+        var handled = false
         val viewModel = viewModelInstance
         if (viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY) {
-            viewModel.triggerProperty(triggerName, this)
-        } else {
-            Log.w(TAG_BINDING, "[$filePath] Unable to fire trigger=$triggerName; no ViewModel bound")
+            handled = viewModel.triggerProperty(triggerName, this)
+        }
+        val canFallback = config.mode != RiveBindingMode.VIEWMODEL_ONLY
+        if (!handled && canFallback) {
+            val view = riveView
+            if (view != null) {
+                view.pushTriggerAcrossStateMachines(triggerName, this)
+            } else {
+                Log.w(TAG_BINDING, "[$filePath] Trigger $triggerName dropped; view not attached")
+            }
         }
     }
 }
@@ -929,6 +937,36 @@ private fun RiveAnimationView.pushNumberInputAcrossStateMachines(
     }
     if (!applied) {
         Log.d(TAG_BINDING, "No state machine exposes input: $inputName")
+    }
+}
+
+private fun RiveAnimationView.pushTriggerAcrossStateMachines(
+    triggerName: String,
+    session: RiveRuntimeSession
+) {
+    val artboard = file?.firstArtboard ?: return
+    val playing = playingStateMachines
+    val targetMachines = if (playing.isNotEmpty()) {
+        playing.map { it.name }
+    } else {
+        artboard.stateMachineNames ?: emptyList()
+    }
+    var fired = false
+    targetMachines.forEach { machineName ->
+        val stateMachine = artboard.stateMachine(machineName)
+        val hasTrigger = stateMachine?.inputs?.any { it.name == triggerName } == true
+        if (hasTrigger) {
+            try {
+                fireState(machineName, triggerName)
+                session.logWrite("stateMachine", triggerName, "trigger", "machine=$machineName")
+                fired = true
+            } catch (e: Exception) {
+                Log.e(TAG_BINDING, "Failed to fire trigger=$triggerName on $machineName", e)
+            }
+        }
+    }
+    if (!fired) {
+        Log.w(TAG_BINDING, "No state machine trigger named $triggerName")
     }
 }
 
@@ -997,17 +1035,23 @@ private fun ViewModelInstance.setStringProperty(
 private fun ViewModelInstance.triggerProperty(
     propertyName: String,
     session: RiveRuntimeSession
-) {
+) : Boolean {
     try {
         val property = getTriggerProperty(propertyName)
-        property?.trigger()
-        session.logWrite("viewModel", propertyName, "trigger")
-        session.notifyObservers(propertyName, "trigger")
+        if (property != null) {
+            property.trigger()
+            session.logWrite("viewModel", propertyName, "trigger")
+            session.notifyObservers(propertyName, "trigger")
+            session.markPropertyAvailable(propertyName)
+            return true
+        }
+        session.markPropertyMissing(propertyName)
     } catch (e: ViewModelException) {
         session.markPropertyMissing(propertyName, e)
     } catch (e: Exception) {
         Log.w(TAG_BINDING, "Unexpected trigger failure: $propertyName", e)
     }
+    return false
 }
 
 private class StemKeyDispatcher(
