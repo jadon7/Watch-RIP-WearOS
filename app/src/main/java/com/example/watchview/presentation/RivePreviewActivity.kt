@@ -30,6 +30,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
 import app.rive.runtime.kotlin.core.File as RiveCoreFile
 import app.rive.runtime.kotlin.core.ViewModelInstance
+import app.rive.runtime.kotlin.core.errors.ViewModelException
 import java.util.*
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -71,6 +72,14 @@ private data class RiveSnapshot(
     val day: Float,
     val week: Float
 )
+
+private const val EXTRA_RIVE_VIEWMODEL_NAME = "extra_rive_viewmodel_name"
+private const val EXTRA_RIVE_INSTANCE_NAME = "extra_rive_instance_name"
+private const val EXTRA_RIVE_BINDING_MODE = "extra_rive_binding_mode"
+
+private const val TAG_BINDING = "RiveBinding"
+private const val TAG_BINDING_SESSION = "RiveBindingSession"
+private const val TAG_BINDING_LISTENER = "RiveBindingListener"
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
@@ -228,8 +237,18 @@ class RivePreviewActivity : ComponentActivity() {
             val isTempFile = intent.getBooleanExtra("is_temp_file", false)
             // 添加检查以确定文件是否为 ADB 传输的文件
             val isExternalFile = isExternalStorageFile(filePath)
+            val bindingMode = intent.getStringExtra(EXTRA_RIVE_BINDING_MODE)?.toRiveBindingMode()
+                ?: RiveBindingMode.HYBRID
+            val bindingConfig = RiveBindingConfig(
+                viewModelName = intent.getStringExtra(EXTRA_RIVE_VIEWMODEL_NAME),
+                instanceName = intent.getStringExtra(EXTRA_RIVE_INSTANCE_NAME),
+                mode = bindingMode
+            )
             
-            Log.d("RivePreviewActivity", "File path: $filePath, isTempFile: $isTempFile, isExternalFile: $isExternalFile")
+            Log.d(
+                "RivePreviewActivity",
+                "File path: $filePath, isTempFile: $isTempFile, isExternalFile: $isExternalFile, bindingConfig=$bindingConfig"
+            )
             
             setContent {
                 WatchViewTheme {
@@ -457,6 +476,7 @@ class RivePreviewActivity : ComponentActivity() {
                         RivePlayerUI(
                             file = File(filePath),
                             batteryLevel = batteryState,
+                            bindingConfig = bindingConfig,
                             onRiveViewCreated = { view -> riveView = view },
                             eventListener = eventListener
                         )
@@ -495,9 +515,10 @@ class RivePreviewActivity : ComponentActivity() {
 }
 
 @Composable
-fun RivePlayerUI(
+private fun RivePlayerUI(
     file: java.io.File,
     batteryLevel: Float,
+    bindingConfig: RiveBindingConfig,
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener
 ) {
@@ -509,9 +530,18 @@ fun RivePlayerUI(
     var currentDay by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH).toFloat()) }
     var currentWeek by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1f) }
     var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
-    var boundViewModelInstance by remember { mutableStateOf<ViewModelInstance?>(null) }
-    val missingViewModelProperties = remember { mutableSetOf<String>() }
-    var lastSnapshot by remember { mutableStateOf<RiveSnapshot?>(null) }
+    val runtimeSession = remember(file.absolutePath, bindingConfig) {
+        RiveRuntimeSession(file.absolutePath, bindingConfig).apply {
+            registerObserver("systemStatusBattery") { value ->
+                Log.d(TAG_BINDING_LISTENER, "systemStatusBattery -> $value")
+            }
+        }
+    }
+
+    DisposableEffect(runtimeSession) {
+        onDispose { runtimeSession.dispose() }
+    }
+
     val riveBytes by produceState<ByteArray?>(initialValue = null, key1 = file.absolutePath) {
         value = withContext(Dispatchers.IO) {
             runCatching { file.readBytes() }
@@ -558,23 +588,13 @@ fun RivePlayerUI(
             try {
                 RiveAnimationView(context).apply {
                     riveViewRef = this
+                    runtimeSession.attachView(this)
                     val riveFile = RiveCoreFile(riveData)
                     setRiveFile(riveFile)
                     autoplay = true
                     addEventListener(eventListener)
-
-                    try {
-                        boundViewModelInstance = ensureViewModelBinding()
-                        if (boundViewModelInstance != null) {
-                            Log.i("RivePlayerUI", "ViewModel instance ready for data binding")
-                        } else {
-                            Log.w("RivePlayerUI", "No ViewModel instance bound; falling back to state-machine inputs")
-                        }
-                    } catch (e: Exception) {
-                        Log.e("RivePlayerUI", "Error while binding ViewModel instance", e)
-                        boundViewModelInstance = null
-                    }
-
+                    runtimeSession.log("View created; autoplay=$autoplay mode=${bindingConfig.mode}")
+                    runtimeSession.bindViewModelIfNeeded(this)
                     onRiveViewCreated(this)
                 }
             } catch (e: Exception) {
@@ -585,8 +605,7 @@ fun RivePlayerUI(
         update = { riveView ->
             try {
                 riveViewRef = riveView
-                val artboard = riveView.file?.firstArtboard
-                val smNames = artboard?.stateMachineNames ?: emptyList()
+                runtimeSession.attachView(riveView)
                 val snapshot = RiveSnapshot(
                     hour = currentHour,
                     minute = currentMinute,
@@ -596,47 +615,7 @@ fun RivePlayerUI(
                     day = currentDay,
                     week = currentWeek
                 )
-                if (snapshot == lastSnapshot) {
-                    return@AndroidView
-                }
-                lastSnapshot = snapshot
-
-                fun setNumberInputAcrossStateMachines(inputName: String, value: Float) {
-                    val targetMachine = smNames.firstOrNull { machineName ->
-                        val stateMachine = artboard?.stateMachine(machineName)
-                        stateMachine?.inputs?.any { it.name == inputName } == true
-                    }
-                    if (targetMachine != null) {
-                        try {
-                            riveView.setNumberState(targetMachine, inputName, value)
-                        } catch (e: Exception) {
-                            Log.e("RivePlayerUI", "Error setting $inputName on $targetMachine", e)
-                        }
-                    } else {
-                        Log.d("RivePlayerUI", "No state machine exposes input: $inputName")
-                    }
-                }
-
-                val usingDataBinding = boundViewModelInstance != null
-                if (!usingDataBinding && smNames.isNotEmpty()) {
-                    setNumberInputAcrossStateMachines("timeHour", currentHour)
-                    setNumberInputAcrossStateMachines("timeMinute", currentMinute)
-                    setNumberInputAcrossStateMachines("timeSecond", currentSecond)
-                    setNumberInputAcrossStateMachines("systemStatusBattery", currentBattery)
-                    setNumberInputAcrossStateMachines("dateMonth", currentMonth)
-                    setNumberInputAcrossStateMachines("dateDay", currentDay)
-                    setNumberInputAcrossStateMachines("dateWeek", currentWeek)
-                }
-
-                boundViewModelInstance?.let { instance ->
-                    instance.setNumberProperty("timeHour", currentHour, missingViewModelProperties)
-                    instance.setNumberProperty("timeMinute", currentMinute, missingViewModelProperties)
-                    instance.setNumberProperty("timeSecond", currentSecond, missingViewModelProperties)
-                    instance.setNumberProperty("systemStatusBattery", currentBattery, missingViewModelProperties)
-                    instance.setNumberProperty("dateMonth", currentMonth, missingViewModelProperties)
-                    instance.setNumberProperty("dateDay", currentDay, missingViewModelProperties)
-                    instance.setNumberProperty("dateWeek", currentWeek, missingViewModelProperties)
-                }
+                runtimeSession.applySnapshot(riveView, snapshot)
             } catch (e: Exception) {
                 Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
             }
@@ -650,8 +629,6 @@ fun RivePlayerUI(
                 view.removeEventListener(eventListener)
                 view.stop()
             }
-            boundViewModelInstance = null
-            missingViewModelProperties.clear()
             riveViewRef = null
         }
     }
@@ -683,41 +660,287 @@ private fun isExternalStorageFile(filePath: String): Boolean {
     }
 }
 
-private fun RiveAnimationView.ensureViewModelBinding(): ViewModelInstance? {
-    val controller = controller ?: return null
-    controller.stateMachines.firstOrNull()?.viewModelInstance?.let { return it }
+private data class RiveBindingConfig(
+    val viewModelName: String? = null,
+    val instanceName: String? = null,
+    val mode: RiveBindingMode = RiveBindingMode.HYBRID
+)
 
-    val artboard = controller.activeArtboard ?: return null
-    val file = file ?: return null
-    val defaultViewModel = file.defaultViewModelForArtboard(artboard) ?: return null
-    val instance = defaultViewModel.createDefaultInstance() ?: return null
+private enum class RiveBindingMode(val wireValue: String) {
+    VIEWMODEL_ONLY("viewmodel_only"),
+    STATE_MACHINE_ONLY("state_machine_only"),
+    HYBRID("hybrid");
 
-    val stateMachine = controller.stateMachines.firstOrNull()
-    if (stateMachine != null) {
-        stateMachine.viewModelInstance = instance
-    } else {
-        artboard.viewModelInstance = instance
+    override fun toString(): String = wireValue
+}
+
+private fun String?.toRiveBindingMode(): RiveBindingMode? {
+    if (this.isNullOrBlank()) return null
+    return RiveBindingMode.values().firstOrNull { it.wireValue.equals(this, ignoreCase = true) }
+}
+
+private class RiveRuntimeSession(
+    private val filePath: String,
+    val config: RiveBindingConfig
+) {
+    private var riveView: RiveAnimationView? = null
+    private var lastSnapshot: RiveSnapshot? = null
+    private val propertyObservers = mutableMapOf<String, MutableList<(Any?) -> Unit>>()
+    val missingViewModelProperties = mutableSetOf<String>()
+    var viewModelInstance: ViewModelInstance? = null
+        private set
+
+    fun attachView(view: RiveAnimationView) {
+        riveView = view
     }
-    return instance
+
+    fun dispose() {
+        riveView = null
+        viewModelInstance = null
+        lastSnapshot = null
+        propertyObservers.clear()
+        missingViewModelProperties.clear()
+    }
+
+    fun registerObserver(propertyName: String, observer: (Any?) -> Unit) {
+        propertyObservers.getOrPut(propertyName) { mutableListOf() }.add(observer)
+    }
+
+    fun notifyObservers(propertyName: String, value: Any?) {
+        propertyObservers[propertyName]?.forEach { listener ->
+            runCatching { listener(value) }.onFailure {
+                Log.w(TAG_BINDING_LISTENER, "Listener for $propertyName failed", it)
+            }
+        }
+    }
+
+    fun log(message: String) {
+        Log.i(TAG_BINDING_SESSION, "[$filePath] $message")
+    }
+
+    fun bindViewModelIfNeeded(riveAnimationView: RiveAnimationView) {
+        if (config.mode == RiveBindingMode.STATE_MACHINE_ONLY) {
+            log("ViewModel binding skipped due to mode=${config.mode}")
+            return
+        }
+
+        val controller = riveAnimationView.controller ?: return
+        val artboard = controller.activeArtboard ?: riveAnimationView.file?.firstArtboard ?: return
+        val file = riveAnimationView.file ?: return
+
+        val existing = controller.stateMachines.firstOrNull { it.viewModelInstance != null }?.viewModelInstance
+        if (existing != null && config.viewModelName.isNullOrBlank() && config.instanceName.isNullOrBlank()) {
+            viewModelInstance = existing
+            log("Reusing existing ViewModel instance ${existing.name}")
+            return
+        }
+
+        val viewModel = when {
+            !config.viewModelName.isNullOrBlank() -> runCatching {
+                file.getViewModelByName(config.viewModelName!!)
+            }.onFailure {
+                Log.w(TAG_BINDING_SESSION, "[$filePath] ViewModel ${config.viewModelName} not found", it)
+            }.getOrNull()
+            else -> file.defaultViewModelForArtboard(artboard)
+        } ?: run {
+            Log.w(TAG_BINDING_SESSION, "[$filePath] No ViewModel resolved for config=$config")
+            return
+        }
+
+        val instance = when {
+            !config.instanceName.isNullOrBlank() -> runCatching {
+                viewModel.createInstanceFromName(config.instanceName!!)
+            }.onFailure {
+                Log.w(TAG_BINDING_SESSION, "[$filePath] Instance ${config.instanceName} not found, fallback to default")
+            }.getOrNull() ?: viewModel.createDefaultInstance()
+            else -> viewModel.createDefaultInstance()
+        } ?: run {
+            Log.w(TAG_BINDING_SESSION, "[$filePath] Failed to create ViewModel instance for ${viewModel.name}")
+            return
+        }
+
+        controller.stateMachines.forEach { it.viewModelInstance = instance }
+        artboard.viewModelInstance = instance
+        viewModelInstance = instance
+        log("Bound ViewModel=${viewModel.name} instance=${instance.name ?: "default"}")
+    }
+
+    fun applySnapshot(riveAnimationView: RiveAnimationView, snapshot: RiveSnapshot) {
+        val previous = lastSnapshot
+        if (snapshot == previous) return
+        lastSnapshot = snapshot
+
+        val viewModel = viewModelInstance
+        val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
+
+        val numberPayload = mapOf(
+            "timeHour" to snapshot.hour,
+            "timeMinute" to snapshot.minute,
+            "timeSecond" to snapshot.second,
+            "systemStatusBattery" to snapshot.battery,
+            "dateMonth" to snapshot.month,
+            "dateDay" to snapshot.day,
+            "dateWeek" to snapshot.week
+        )
+
+        if (hasViewModel && viewModel != null) {
+            numberPayload.forEach { (name, value) ->
+                viewModel.setNumberProperty(name, value, this)
+            }
+            val amPm = if (snapshot.hour >= 12f) "PM" else "AM"
+            viewModel.setStringProperty("timePeriod", amPm, this)
+            viewModel.setBooleanProperty("systemStatusCharging", snapshot.battery >= 99f, this)
+            if (previous == null || previous.minute.toInt() != snapshot.minute.toInt()) {
+                viewModel.triggerProperty("updateDisplay", this)
+            }
+        }
+
+        val shouldTouchStateMachines = config.mode != RiveBindingMode.VIEWMODEL_ONLY
+        if (shouldTouchStateMachines) {
+            numberPayload.forEach { (name, value) ->
+                val needsFallback = when (config.mode) {
+                    RiveBindingMode.STATE_MACHINE_ONLY -> true
+                    RiveBindingMode.VIEWMODEL_ONLY -> false
+                    RiveBindingMode.HYBRID -> !hasViewModel || missingViewModelProperties.contains(name)
+                }
+                if (needsFallback) {
+                    riveAnimationView.pushNumberInputAcrossStateMachines(name, value, this)
+                }
+            }
+        }
+    }
+
+    fun markPropertyAvailable(propertyName: String) {
+        if (missingViewModelProperties.remove(propertyName)) {
+            Log.i(TAG_BINDING, "[$filePath] ViewModel property restored: $propertyName")
+        }
+    }
+
+    fun markPropertyMissing(propertyName: String, throwable: Throwable? = null) {
+        if (missingViewModelProperties.add(propertyName)) {
+            if (throwable != null) {
+                Log.w(TAG_BINDING, "[$filePath] ViewModel property missing: $propertyName", throwable)
+            } else {
+                Log.w(TAG_BINDING, "[$filePath] ViewModel property missing: $propertyName")
+            }
+        }
+    }
+
+    fun logWrite(target: String, propertyName: String, value: Any?, extra: String? = null) {
+        val suffix = extra?.let { " $it" } ?: ""
+        Log.d(
+            TAG_BINDING,
+            "[write] target=$target field=$propertyName value=$value mode=${config.mode.wireValue}$suffix"
+        )
+    }
+}
+
+private fun RiveAnimationView.pushNumberInputAcrossStateMachines(
+    inputName: String,
+    value: Float,
+    session: RiveRuntimeSession
+) {
+    val artboard = file?.firstArtboard ?: return
+    val playing = playingStateMachines
+    val targetMachines = if (playing.isNotEmpty()) {
+        playing.map { it.name }
+    } else {
+        artboard.stateMachineNames ?: emptyList()
+    }
+    var applied = false
+    targetMachines.forEach { machineName ->
+        val stateMachine = artboard.stateMachine(machineName)
+        val hasInput = stateMachine?.inputs?.any { it.name == inputName } == true
+        if (hasInput) {
+            try {
+                setNumberState(machineName, inputName, value)
+                session.logWrite("stateMachine", inputName, value, "machine=$machineName")
+                session.notifyObservers(inputName, value)
+                applied = true
+            } catch (e: Exception) {
+                Log.e(TAG_BINDING, "Failed to set $inputName on $machineName", e)
+            }
+        }
+    }
+    if (!applied) {
+        Log.d(TAG_BINDING, "No state machine exposes input: $inputName")
+    }
 }
 
 private fun ViewModelInstance.setNumberProperty(
     propertyName: String,
     value: Float,
-    missingProperties: MutableSet<String>
+    session: RiveRuntimeSession
 ) {
     try {
         val property = getNumberProperty(propertyName)
         if (property != null) {
             if (property.value != value) {
                 property.value = value
+                session.logWrite("viewModel", propertyName, value)
+                session.notifyObservers(propertyName, value)
             }
-        } else if (missingProperties.add(propertyName)) {
-            Log.d("RivePlayerUI", "ViewModel property not found: $propertyName")
+            session.markPropertyAvailable(propertyName)
+        } else {
+            session.markPropertyMissing(propertyName)
         }
     } catch (e: Exception) {
-        if (missingProperties.add(propertyName)) {
-            Log.w("RivePlayerUI", "Unexpected error accessing property: $propertyName", e)
+        session.markPropertyMissing(propertyName, e)
+    }
+}
+
+private fun ViewModelInstance.setBooleanProperty(
+    propertyName: String,
+    value: Boolean,
+    session: RiveRuntimeSession
+) {
+    try {
+        val property = getBooleanProperty(propertyName)
+        if (property != null && property.value != value) {
+            property.value = value
+            session.logWrite("viewModel", propertyName, value)
+            session.notifyObservers(propertyName, value)
         }
+        session.markPropertyAvailable(propertyName)
+    } catch (e: ViewModelException) {
+        session.markPropertyMissing(propertyName, e)
+    } catch (e: Exception) {
+        Log.w(TAG_BINDING, "Unexpected boolean write failure: $propertyName", e)
+    }
+}
+
+private fun ViewModelInstance.setStringProperty(
+    propertyName: String,
+    value: String,
+    session: RiveRuntimeSession
+) {
+    try {
+        val property = getStringProperty(propertyName)
+        if (property != null && property.value != value) {
+            property.value = value
+            session.logWrite("viewModel", propertyName, value)
+            session.notifyObservers(propertyName, value)
+        }
+        session.markPropertyAvailable(propertyName)
+    } catch (e: ViewModelException) {
+        session.markPropertyMissing(propertyName, e)
+    } catch (e: Exception) {
+        Log.w(TAG_BINDING, "Unexpected string write failure: $propertyName", e)
+    }
+}
+
+private fun ViewModelInstance.triggerProperty(
+    propertyName: String,
+    session: RiveRuntimeSession
+) {
+    try {
+        val property = getTriggerProperty(propertyName)
+        property?.trigger()
+        session.logWrite("viewModel", propertyName, "trigger")
+        session.notifyObservers(propertyName, "trigger")
+    } catch (e: ViewModelException) {
+        session.markPropertyMissing(propertyName, e)
+    } catch (e: Exception) {
+        Log.w(TAG_BINDING, "Unexpected trigger failure: $propertyName", e)
     }
 }
