@@ -83,6 +83,7 @@ private const val TAG_BINDING = "RiveBinding"
 private const val TAG_BINDING_SESSION = "RiveBindingSession"
 private const val TAG_BINDING_LISTENER = "RiveBindingListener"
 private const val TAG_STEM_KEY = "StemKey"
+private const val TAG_POWER_KEY = "PowerKey"
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
@@ -90,6 +91,7 @@ class RivePreviewActivity : ComponentActivity() {
     private lateinit var vibrator: Vibrator
     private lateinit var watchKeyController: WatchKeyController
     private val stemKeyDispatcher = StemKeyDispatcher()
+    private val powerKeyDispatcher = PowerKeyDispatcher()
     
     // 添加错误计数器
     private var errorCount = 0
@@ -517,7 +519,8 @@ class RivePreviewActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        watchKeyController.enableStemKeyBlocking()
+        watchKeyController.enableStemKeyBlocking(true)
+        watchKeyController.enablePowerKeyBlocking(true)
     }
 
     override fun onPause() {
@@ -529,12 +532,18 @@ class RivePreviewActivity : ComponentActivity() {
         if (keyCode == KeyEvent.KEYCODE_STEM_PRIMARY && watchKeyController.isStemKeyBlockingEnabled()) {
             return stemKeyDispatcher.onKeyDown(event)
         }
+        if (keyCode == KeyEvent.KEYCODE_POWER && watchKeyController.isPowerKeyBlockingEnabled()) {
+            return powerKeyDispatcher.onKeyDown(event)
+        }
         return super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_STEM_PRIMARY && watchKeyController.isStemKeyBlockingEnabled()) {
             return stemKeyDispatcher.onKeyUp(event)
+        }
+        if (keyCode == KeyEvent.KEYCODE_POWER && watchKeyController.isPowerKeyBlockingEnabled()) {
+            return powerKeyDispatcher.onKeyUp(event)
         }
         return super.onKeyUp(keyCode, event)
     }
@@ -987,6 +996,22 @@ private class StemKeyDispatcher {
     fun onKeyUp(event: KeyEvent): Boolean {
         val pressDuration = event.eventTime - lastDownTimestamp
         Log.d(TAG_STEM_KEY, "Stem key up after ${pressDuration}ms (TODO: trigger action).")
+        return true
+    }
+}
+
+private class PowerKeyDispatcher {
+    private var lastDownTimestamp = 0L
+
+    fun onKeyDown(event: KeyEvent): Boolean {
+        lastDownTimestamp = event.eventTime
+        Log.d(TAG_POWER_KEY, "Power key down intercepted (TODO: custom shortcuts).")
+        return true
+    }
+
+    fun onKeyUp(event: KeyEvent): Boolean {
+        val pressDuration = event.eventTime - lastDownTimestamp
+        Log.d(TAG_POWER_KEY, "Power key up after ${pressDuration}ms (TODO: custom action).")
         return true
     }
 }

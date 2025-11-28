@@ -16,20 +16,36 @@ class WatchKeyController(
     private var originalTitle: CharSequence? = null
     private var appliedFlags: Int = FLAG_NONE
     private var interceptStemKey: Boolean = false
+    private var interceptPowerKey: Boolean = false
 
-    fun enableStemKeyBlocking() {
-        interceptStemKey = true
-        applyFlags(FLAG_IGNORE_STEM_KEY)
+    fun enableStemKeyBlocking(enable: Boolean) {
+        interceptStemKey = enable
+        refreshFlags()
+    }
+
+    fun enablePowerKeyBlocking(enable: Boolean) {
+        interceptPowerKey = enable
+        refreshFlags()
     }
 
     fun disableCustomBehavior() {
         interceptStemKey = false
-        applyFlags(FLAG_NONE)
+        interceptPowerKey = false
+        refreshFlags()
     }
 
     fun isStemKeyBlockingEnabled(): Boolean = interceptStemKey
 
+    fun isPowerKeyBlockingEnabled(): Boolean = interceptPowerKey
+
     fun currentFlags(): Int = appliedFlags
+
+    private fun refreshFlags() {
+        var flags = FLAG_NONE
+        if (interceptStemKey) flags = flags or FLAG_IGNORE_STEM_KEY
+        if (interceptPowerKey) flags = flags or FLAG_IGNORE_POWER_KEY
+        applyFlags(flags)
+    }
 
     private fun applyFlags(flags: Int) {
         appliedFlags = flags
