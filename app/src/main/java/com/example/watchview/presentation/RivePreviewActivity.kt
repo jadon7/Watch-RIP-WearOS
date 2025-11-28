@@ -1102,13 +1102,13 @@ private class StemKeyDispatcher(
 
     fun onKeyDown(event: KeyEvent): Boolean {
         lastDownTimestamp = event.eventTime
-        Log.d(TAG_STEM_KEY, "Stem key down intercepted (TODO: attach preview shortcuts).")
+        Log.i(TAG_BINDING, "Stem key down intercepted")
         return true
     }
 
     fun onKeyUp(event: KeyEvent): Boolean {
         val pressDuration = event.eventTime - lastDownTimestamp
-        Log.d(TAG_STEM_KEY, "Stem key up after ${pressDuration}ms (TODO: trigger action).")
+        Log.i(TAG_BINDING, "Stem key up after ${pressDuration}ms")
         onTrigger()
         return true
     }
@@ -1119,13 +1119,13 @@ private class PowerKeyDispatcher {
 
     fun onKeyDown(event: KeyEvent): Boolean {
         lastDownTimestamp = event.eventTime
-        Log.d(TAG_POWER_KEY, "Power key down intercepted (TODO: custom shortcuts).")
+        Log.i(TAG_BINDING, "Power key down intercepted")
         return true
     }
 
     fun onKeyUp(event: KeyEvent): Boolean {
         val pressDuration = event.eventTime - lastDownTimestamp
-        Log.d(TAG_POWER_KEY, "Power key up after ${pressDuration}ms (TODO: custom action).")
+        Log.i(TAG_BINDING, "Power key up after ${pressDuration}ms")
         return true
     }
 }
