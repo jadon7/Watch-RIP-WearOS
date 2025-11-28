@@ -1,6 +1,7 @@
 package com.example.watchview.presentation
 
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -62,6 +63,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 import com.example.watchview.presentation.ui.ACTION_CLOSE_PREVIOUS_PREVIEW
+import com.example.watchview.utils.WatchKeyController
 
 private data class RiveSnapshot(
     val hour: Float,
@@ -80,11 +82,14 @@ private const val EXTRA_RIVE_BINDING_MODE = "extra_rive_binding_mode"
 private const val TAG_BINDING = "RiveBinding"
 private const val TAG_BINDING_SESSION = "RiveBindingSession"
 private const val TAG_BINDING_LISTENER = "RiveBindingListener"
+private const val TAG_STEM_KEY = "StemKey"
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
     private var riveView: RiveAnimationView? = null
     private lateinit var vibrator: Vibrator
+    private lateinit var watchKeyController: WatchKeyController
+    private val stemKeyDispatcher = StemKeyDispatcher()
     
     // 添加错误计数器
     private var errorCount = 0
@@ -185,6 +190,7 @@ class RivePreviewActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        watchKeyController = WatchKeyController { window }
         
         try {
             // 初始化振动器
@@ -507,6 +513,30 @@ class RivePreviewActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.e("RivePreviewActivity", "Error in onDestroy", e)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        watchKeyController.enableStemKeyBlocking()
+    }
+
+    override fun onPause() {
+        watchKeyController.disableCustomBehavior()
+        super.onPause()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_STEM_PRIMARY && watchKeyController.isStemKeyBlockingEnabled()) {
+            return stemKeyDispatcher.onKeyDown(event)
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_STEM_PRIMARY && watchKeyController.isStemKeyBlockingEnabled()) {
+            return stemKeyDispatcher.onKeyUp(event)
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     override fun onBackPressed() {
@@ -942,5 +972,21 @@ private fun ViewModelInstance.triggerProperty(
         session.markPropertyMissing(propertyName, e)
     } catch (e: Exception) {
         Log.w(TAG_BINDING, "Unexpected trigger failure: $propertyName", e)
+    }
+}
+
+private class StemKeyDispatcher {
+    private var lastDownTimestamp = 0L
+
+    fun onKeyDown(event: KeyEvent): Boolean {
+        lastDownTimestamp = event.eventTime
+        Log.d(TAG_STEM_KEY, "Stem key down intercepted (TODO: attach preview shortcuts).")
+        return true
+    }
+
+    fun onKeyUp(event: KeyEvent): Boolean {
+        val pressDuration = event.eventTime - lastDownTimestamp
+        Log.d(TAG_STEM_KEY, "Stem key up after ${pressDuration}ms (TODO: trigger action).")
+        return true
     }
 }
