@@ -558,6 +558,7 @@ class RivePreviewActivity : ComponentActivity() {
 
     private fun emitCrownTrigger() {
         activityScope.launch {
+            Log.i(TAG_BINDING, "Emitting keyCrown trigger from stem key")
             crownTriggerFlow.emit(Unit)
         }
     }
@@ -675,6 +676,7 @@ private fun RivePlayerUI(
 
     LaunchedEffect(crownTriggerFlow, runtimeSession) {
         crownTriggerFlow.collect {
+            Log.i(TAG_BINDING, "crownTriggerFlow -> fire keyCrown")
             runtimeSession.fireTrigger("keyCrown")
         }
     }
