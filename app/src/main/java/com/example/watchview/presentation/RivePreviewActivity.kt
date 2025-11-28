@@ -745,6 +745,7 @@ private class RiveRuntimeSession(
     val missingViewModelProperties = mutableSetOf<String>()
     var viewModelInstance: ViewModelInstance? = null
         private set
+    private val pendingTriggers = ArrayDeque<String>()
 
     fun attachView(view: RiveAnimationView) {
         riveView = view
@@ -756,6 +757,7 @@ private class RiveRuntimeSession(
         lastSnapshot = null
         propertyObservers.clear()
         missingViewModelProperties.clear()
+        pendingTriggers.clear()
     }
 
     fun registerObserver(propertyName: String, observer: (Any?) -> Unit) {
@@ -788,6 +790,7 @@ private class RiveRuntimeSession(
         if (existing != null && config.viewModelName.isNullOrBlank() && config.instanceName.isNullOrBlank()) {
             viewModelInstance = existing
             log("Reusing existing ViewModel instance ${existing.name}")
+            dispatchPendingTriggers()
             return
         }
 
@@ -819,6 +822,7 @@ private class RiveRuntimeSession(
         artboard.viewModelInstance = instance
         viewModelInstance = instance
         log("Bound ViewModel=${viewModel.name} instance=${instance.name ?: "default"}")
+        dispatchPendingTriggers()
     }
 
     fun applySnapshot(riveAnimationView: RiveAnimationView, snapshot: RiveSnapshot) {
@@ -891,18 +895,44 @@ private class RiveRuntimeSession(
     }
 
     fun fireTrigger(triggerName: String) {
-        var handled = false
-        val viewModel = viewModelInstance
-        if (viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY) {
-            handled = viewModel.triggerProperty(triggerName, this)
+        if (config.mode == RiveBindingMode.STATE_MACHINE_ONLY) {
+            riveView?.pushTriggerAcrossStateMachines(triggerName, this)
+            return
         }
+
+        val viewModelReady = viewModelInstance != null
+        if (!viewModelReady) {
+            pendingTriggers.add(triggerName)
+            Log.i(TAG_BINDING, "[$filePath] Queue trigger=$triggerName until ViewModel binds")
+            return
+        }
+
+        val handled = dispatchTriggerToViewModel(triggerName)
+        if (handled) return
+
         val canFallback = config.mode != RiveBindingMode.VIEWMODEL_ONLY
-        if (!handled && canFallback) {
+        if (canFallback) {
             val view = riveView
             if (view != null) {
                 view.pushTriggerAcrossStateMachines(triggerName, this)
             } else {
                 Log.w(TAG_BINDING, "[$filePath] Trigger $triggerName dropped; view not attached")
+            }
+        }
+    }
+
+    private fun dispatchTriggerToViewModel(triggerName: String): Boolean {
+        val viewModel = viewModelInstance ?: return false
+        return viewModel.triggerProperty(triggerName, this)
+    }
+
+    private fun dispatchPendingTriggers() {
+        if (pendingTriggers.isEmpty()) return
+        val queued = ArrayList(pendingTriggers)
+        pendingTriggers.clear()
+        queued.forEach { trigger ->
+            if (!dispatchTriggerToViewModel(trigger)) {
+                Log.w(TAG_BINDING, "[$filePath] Pending trigger $trigger not found in ViewModel")
             }
         }
     }
