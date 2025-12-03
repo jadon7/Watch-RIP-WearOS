@@ -539,6 +539,7 @@ class RivePreviewActivity : ComponentActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_POWER) {
+            Log.i(TAG_BINDING, "dispatch power key action=${event.action}")
             return when (event.action) {
                 KeyEvent.ACTION_DOWN -> powerKeyDispatcher.onKeyDown(event)
                 KeyEvent.ACTION_UP -> powerKeyDispatcher.onKeyUp(event)
