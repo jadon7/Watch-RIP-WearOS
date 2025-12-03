@@ -1,6 +1,7 @@
 package com.example.watchview.presentation
 
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -37,7 +38,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.compose.runtime.collectAsState
@@ -62,6 +65,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.watchview.presentation.ui.ACTION_TRIGGER_WIRED_PREVIEW
 import com.example.watchview.presentation.ui.ACTION_CLOSE_PREVIOUS_PREVIEW
+import com.example.watchview.utils.WatchKeyController
 
 private data class RiveSnapshot(
     val hour: Float,
@@ -80,12 +84,25 @@ private const val EXTRA_RIVE_BINDING_MODE = "extra_rive_binding_mode"
 private const val TAG_BINDING = "RiveBinding"
 private const val TAG_BINDING_SESSION = "RiveBindingSession"
 private const val TAG_BINDING_LISTENER = "RiveBindingListener"
+private const val STEM_KEY_FLAGS =
+    WatchKeyController.FLAG_CONVERT_STEM_TO_FX or
+    WatchKeyController.FLAG_CONVERT_STEM_TO_F1_ONLY
+// Power key events are delivered only when FLAG_USE_POWER_KEY is set.
+// According to the vendor doc, returning true from onKeyDown() is enough
+// to suppress the default control-center behavior, so we don't set IGNORE flags.
+private const val POWER_KEY_FLAGS = WatchKeyController.FLAG_USE_POWER_KEY
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
     private var riveView: RiveAnimationView? = null
     private lateinit var vibrator: Vibrator
-    
+    private lateinit var watchKeyController: WatchKeyController
+    private val activityScope = MainScope()
+    private val crownTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val powerTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val stemKeyDispatcher = StemKeyDispatcher { emitCrownTrigger() }
+    private val powerKeyDispatcher = PowerKeyDispatcher { emitPowerTrigger() }
+
     // 添加错误计数器
     private var errorCount = 0
     private val maxErrorCount = 3
@@ -95,7 +112,6 @@ class RivePreviewActivity : ComponentActivity() {
     val batteryLevel: StateFlow<Float> = _batteryLevel.asStateFlow()
     
     // 添加协程作用域
-    private val activityScope = MainScope()
 
     // 添加 Rive 事件监听器
     private val eventListener = object : RiveFileController.RiveEventListener {
@@ -185,6 +201,7 @@ class RivePreviewActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        watchKeyController = WatchKeyController { window }
         
         try {
             // 初始化振动器
@@ -477,6 +494,8 @@ class RivePreviewActivity : ComponentActivity() {
                             file = File(filePath),
                             batteryLevel = batteryState,
                             bindingConfig = bindingConfig,
+                            crownTriggerFlow = crownTriggerFlow,
+                            powerTriggerFlow = powerTriggerFlow,
                             onRiveViewCreated = { view -> riveView = view },
                             eventListener = eventListener
                         )
@@ -509,8 +528,54 @@ class RivePreviewActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        watchKeyController.applyFlags(STEM_KEY_FLAGS or POWER_KEY_FLAGS)
+    }
+
+    override fun onPause() {
+        watchKeyController.clearFlags()
+        super.onPause()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_POWER) {
+            Log.d(TAG_BINDING, "Power key onKeyDown intercepted")
+            powerKeyDispatcher.onKeyDown(event)
+            return true
+        }
+        return if (isStemKeyCode(keyCode)) {
+            stemKeyDispatcher.onKeyDown(event)
+        } else super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_POWER) {
+            Log.d(TAG_BINDING, "Power key onKeyUp intercepted")
+            powerKeyDispatcher.onKeyUp(event)
+            return true
+        }
+        return if (isStemKeyCode(keyCode)) {
+            stemKeyDispatcher.onKeyUp(event)
+        } else super.onKeyUp(keyCode, event)
+    }
+
     override fun onBackPressed() {
         super.onBackPressed()
+    }
+
+    private fun emitCrownTrigger() {
+        activityScope.launch {
+            Log.i(TAG_BINDING, "Emitting keyCrown trigger from stem key")
+            crownTriggerFlow.emit(Unit)
+        }
+    }
+
+    private fun emitPowerTrigger() {
+        activityScope.launch {
+            Log.i(TAG_BINDING, "Emitting keyPower trigger from power key")
+            powerTriggerFlow.emit(Unit)
+        }
     }
 }
 
@@ -519,6 +584,8 @@ private fun RivePlayerUI(
     file: java.io.File,
     batteryLevel: Float,
     bindingConfig: RiveBindingConfig,
+    crownTriggerFlow: SharedFlow<Unit>,
+    powerTriggerFlow: SharedFlow<Unit>,
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener
 ) {
@@ -623,6 +690,20 @@ private fun RivePlayerUI(
         modifier = Modifier.fillMaxSize()
     )
 
+    LaunchedEffect(crownTriggerFlow, runtimeSession) {
+        crownTriggerFlow.collect {
+            Log.i(TAG_BINDING, "crownTriggerFlow -> fire keyCrown")
+            runtimeSession.fireTrigger("keyCrown")
+        }
+    }
+
+    LaunchedEffect(powerTriggerFlow, runtimeSession) {
+        powerTriggerFlow.collect {
+            Log.i(TAG_BINDING, "powerTriggerFlow -> fire keyPower")
+            runtimeSession.fireTrigger("keyPower")
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             riveViewRef?.let { view ->
@@ -689,6 +770,7 @@ private class RiveRuntimeSession(
     val missingViewModelProperties = mutableSetOf<String>()
     var viewModelInstance: ViewModelInstance? = null
         private set
+    private val pendingTriggers = ArrayDeque<String>()
 
     fun attachView(view: RiveAnimationView) {
         riveView = view
@@ -700,6 +782,7 @@ private class RiveRuntimeSession(
         lastSnapshot = null
         propertyObservers.clear()
         missingViewModelProperties.clear()
+        pendingTriggers.clear()
     }
 
     fun registerObserver(propertyName: String, observer: (Any?) -> Unit) {
@@ -732,6 +815,7 @@ private class RiveRuntimeSession(
         if (existing != null && config.viewModelName.isNullOrBlank() && config.instanceName.isNullOrBlank()) {
             viewModelInstance = existing
             log("Reusing existing ViewModel instance ${existing.name}")
+            dispatchPendingTriggers()
             return
         }
 
@@ -763,6 +847,7 @@ private class RiveRuntimeSession(
         artboard.viewModelInstance = instance
         viewModelInstance = instance
         log("Bound ViewModel=${viewModel.name} instance=${instance.name ?: "default"}")
+        dispatchPendingTriggers()
     }
 
     fun applySnapshot(riveAnimationView: RiveAnimationView, snapshot: RiveSnapshot) {
@@ -833,6 +918,58 @@ private class RiveRuntimeSession(
             "[write] target=$target field=$propertyName value=$value mode=${config.mode.wireValue}$suffix"
         )
     }
+
+    fun fireTrigger(triggerName: String) {
+        if (config.mode == RiveBindingMode.STATE_MACHINE_ONLY) {
+            Log.i(TAG_BINDING, "[$filePath] Trigger $triggerName -> state machine (mode STATE_MACHINE_ONLY)")
+            riveView?.pushTriggerAcrossStateMachines(triggerName, this)
+            return
+        }
+
+        val viewModelReady = viewModelInstance != null
+        if (!viewModelReady) {
+            pendingTriggers.add(triggerName)
+            Log.i(TAG_BINDING, "[$filePath] Queue trigger=$triggerName (ViewModel not bound yet)")
+            return
+        }
+
+        val handled = dispatchTriggerToViewModel(triggerName)
+        if (handled) {
+            Log.i(TAG_BINDING, "[$filePath] Trigger $triggerName fired via ViewModel")
+            return
+        }
+
+        val canFallback = config.mode != RiveBindingMode.VIEWMODEL_ONLY
+        if (canFallback) {
+            val view = riveView
+            if (view != null) {
+                Log.i(TAG_BINDING, "[$filePath] Trigger $triggerName fallback to state machine input")
+                view.pushTriggerAcrossStateMachines(triggerName, this)
+            } else {
+                Log.w(TAG_BINDING, "[$filePath] Trigger $triggerName dropped; view not attached")
+            }
+        } else {
+            Log.w(TAG_BINDING, "[$filePath] Trigger $triggerName not found in ViewModel and fallback disabled")
+        }
+    }
+
+    private fun dispatchTriggerToViewModel(triggerName: String): Boolean {
+        val viewModel = viewModelInstance ?: return false
+        return viewModel.triggerProperty(triggerName, this)
+    }
+
+    private fun dispatchPendingTriggers() {
+        if (pendingTriggers.isEmpty()) return
+        val queued = ArrayList(pendingTriggers)
+        pendingTriggers.clear()
+        queued.forEach { trigger ->
+            if (!dispatchTriggerToViewModel(trigger)) {
+                Log.w(TAG_BINDING, "[$filePath] Pending trigger $trigger not found in ViewModel")
+            } else {
+                Log.i(TAG_BINDING, "[$filePath] Drained pending trigger $trigger")
+            }
+        }
+    }
 }
 
 private fun RiveAnimationView.pushNumberInputAcrossStateMachines(
@@ -864,6 +1001,36 @@ private fun RiveAnimationView.pushNumberInputAcrossStateMachines(
     }
     if (!applied) {
         Log.d(TAG_BINDING, "No state machine exposes input: $inputName")
+    }
+}
+
+private fun RiveAnimationView.pushTriggerAcrossStateMachines(
+    triggerName: String,
+    session: RiveRuntimeSession
+) {
+    val artboard = file?.firstArtboard ?: return
+    val playing = playingStateMachines
+    val targetMachines = if (playing.isNotEmpty()) {
+        playing.map { it.name }
+    } else {
+        artboard.stateMachineNames ?: emptyList()
+    }
+    var fired = false
+    targetMachines.forEach { machineName ->
+        val stateMachine = artboard.stateMachine(machineName)
+        val hasTrigger = stateMachine?.inputs?.any { it.name == triggerName } == true
+        if (hasTrigger) {
+            try {
+                fireState(machineName, triggerName)
+                session.logWrite("stateMachine", triggerName, "trigger", "machine=$machineName")
+                fired = true
+            } catch (e: Exception) {
+                Log.e(TAG_BINDING, "Failed to fire trigger=$triggerName on $machineName", e)
+            }
+        }
+    }
+    if (!fired) {
+        Log.w(TAG_BINDING, "No state machine trigger named $triggerName")
     }
 }
 
@@ -932,15 +1099,65 @@ private fun ViewModelInstance.setStringProperty(
 private fun ViewModelInstance.triggerProperty(
     propertyName: String,
     session: RiveRuntimeSession
-) {
+) : Boolean {
     try {
         val property = getTriggerProperty(propertyName)
-        property?.trigger()
-        session.logWrite("viewModel", propertyName, "trigger")
-        session.notifyObservers(propertyName, "trigger")
+        if (property != null) {
+            property.trigger()
+            session.logWrite("viewModel", propertyName, "trigger")
+            session.notifyObservers(propertyName, "trigger")
+            session.markPropertyAvailable(propertyName)
+            return true
+        }
+        session.markPropertyMissing(propertyName)
     } catch (e: ViewModelException) {
         session.markPropertyMissing(propertyName, e)
     } catch (e: Exception) {
         Log.w(TAG_BINDING, "Unexpected trigger failure: $propertyName", e)
     }
+    return false
+}
+
+private class StemKeyDispatcher(
+    private val onTrigger: () -> Unit
+) {
+    private var lastDownTimestamp = 0L
+
+    fun onKeyDown(event: KeyEvent): Boolean {
+        lastDownTimestamp = event.eventTime
+        Log.i(TAG_BINDING, "Stem key down intercepted")
+        return true
+    }
+
+    fun onKeyUp(event: KeyEvent): Boolean {
+        val pressDuration = event.eventTime - lastDownTimestamp
+        Log.i(TAG_BINDING, "Stem key up after ${pressDuration}ms")
+        onTrigger()
+        return true
+    }
+}
+
+private class PowerKeyDispatcher(
+    private val onTrigger: () -> Unit
+) {
+    private var lastDownTimestamp = 0L
+
+    fun onKeyDown(event: KeyEvent): Boolean {
+        lastDownTimestamp = event.eventTime
+        Log.i(TAG_BINDING, "Power key down intercepted")
+        return true
+    }
+
+    fun onKeyUp(event: KeyEvent): Boolean {
+        val pressDuration = event.eventTime - lastDownTimestamp
+        Log.i(TAG_BINDING, "Power key up after ${pressDuration}ms")
+        onTrigger()
+        return true
+    }
+}
+
+private fun isStemKeyCode(keyCode: Int): Boolean {
+    return keyCode == KeyEvent.KEYCODE_STEM_PRIMARY ||
+        keyCode == KeyEvent.KEYCODE_F1 ||
+        keyCode == KeyEvent.KEYCODE_F2
 }
