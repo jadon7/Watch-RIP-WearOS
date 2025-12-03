@@ -87,9 +87,10 @@ private const val TAG_BINDING_LISTENER = "RiveBindingListener"
 private const val STEM_KEY_FLAGS =
     WatchKeyController.FLAG_CONVERT_STEM_TO_FX or
     WatchKeyController.FLAG_CONVERT_STEM_TO_F1_ONLY
-private const val POWER_KEY_FLAGS =
-    WatchKeyController.FLAG_USE_POWER_KEY or
-    WatchKeyController.FLAG_IGNORE_POWER_KEY
+// Power key events are delivered only when FLAG_USE_POWER_KEY is set.
+// According to the vendor doc, returning true from onKeyDown() is enough
+// to suppress the default control-center behavior, so we don't set IGNORE flags.
+private const val POWER_KEY_FLAGS = WatchKeyController.FLAG_USE_POWER_KEY
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
