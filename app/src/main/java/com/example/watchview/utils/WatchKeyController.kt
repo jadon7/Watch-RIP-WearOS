@@ -15,39 +15,8 @@ class WatchKeyController(
 
     private var originalTitle: CharSequence? = null
     private var appliedFlags: Int = FLAG_NONE
-    private var interceptStemKey: Boolean = false
-    private var interceptPowerKey: Boolean = false
 
-    fun enableStemKeyBlocking(enable: Boolean) {
-        interceptStemKey = enable
-        refreshFlags()
-    }
-
-    fun enablePowerKeyBlocking(enable: Boolean) {
-        interceptPowerKey = enable
-        refreshFlags()
-    }
-
-    fun disableCustomBehavior() {
-        interceptStemKey = false
-        interceptPowerKey = false
-        refreshFlags()
-    }
-
-    fun isStemKeyBlockingEnabled(): Boolean = interceptStemKey
-
-    fun isPowerKeyBlockingEnabled(): Boolean = interceptPowerKey
-
-    fun currentFlags(): Int = appliedFlags
-
-    private fun refreshFlags() {
-        var flags = FLAG_NONE
-        if (interceptStemKey) flags = flags or FLAG_IGNORE_STEM_KEY
-        if (interceptPowerKey) flags = flags or FLAG_IGNORE_POWER_KEY
-        applyFlags(flags)
-    }
-
-    private fun applyFlags(flags: Int) {
+    fun applyFlags(flags: Int) {
         appliedFlags = flags
         val window = windowProvider() ?: return
         val params = window.attributes ?: WindowManager.LayoutParams()
@@ -63,6 +32,15 @@ class WatchKeyController(
         Log.i(TAG, "Applied watch key flags=$flags")
     }
 
+    fun clearFlags() {
+        appliedFlags = FLAG_NONE
+        val window = windowProvider() ?: return
+        val params = window.attributes ?: WindowManager.LayoutParams()
+        params.title = originalTitle ?: params.title
+        window.attributes = params
+        Log.i(TAG, "Cleared watch key flags")
+    }
+
     companion object {
         private const val TAG = "WatchKeyController"
         private const val FLAGS_PREFIX = "miwear_"
@@ -70,7 +48,7 @@ class WatchKeyController(
         const val FLAG_NONE = 0x00000000
         const val FLAG_USE_POWER_KEY = 0x00000001
         const val FLAG_CONVERT_STEM_TO_FX = 0x00000002
-        const val FLAG_IGNORE_STEM_KEY = 0x00000004
+        const val FLAG_IGNORE_STEM_KEY = 0x00000004 // avoid using when we need callbacks
         const val FLAG_IGNORE_POWER_KEY = 0x00000008
         const val FLAG_USE_DEFAULT_STEM_KEY_LONG_PRESS = 0x00000010
         const val FLAG_CONVERT_STEM_TO_F1_ONLY = 0x00000020
