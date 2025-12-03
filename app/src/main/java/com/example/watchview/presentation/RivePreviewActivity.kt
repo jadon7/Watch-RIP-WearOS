@@ -100,6 +100,7 @@ class RivePreviewActivity : ComponentActivity() {
     private val activityScope = MainScope()
     private val crownTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val powerTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val replayTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val stemKeyDispatcher = StemKeyDispatcher { emitCrownTrigger() }
     private val powerKeyDispatcher = PowerKeyDispatcher { emitPowerTrigger() }
 
@@ -326,6 +327,9 @@ class RivePreviewActivity : ComponentActivity() {
                                                         it.reset()
                                                         it.play()
                                                     }
+                                                    activityScope.launch {
+                                                        replayTriggerFlow.emit(Unit)
+                                                    }
                                                     Log.d("DialogDebug", "Replay successful")
                                                 } catch (e: Exception) {
                                                     Log.e("DialogDebug", "Error during replay", e)
@@ -496,6 +500,7 @@ class RivePreviewActivity : ComponentActivity() {
                             bindingConfig = bindingConfig,
                             crownTriggerFlow = crownTriggerFlow,
                             powerTriggerFlow = powerTriggerFlow,
+                            replayTriggerFlow = replayTriggerFlow,
                             onRiveViewCreated = { view -> riveView = view },
                             eventListener = eventListener
                         )
@@ -586,6 +591,7 @@ private fun RivePlayerUI(
     bindingConfig: RiveBindingConfig,
     crownTriggerFlow: SharedFlow<Unit>,
     powerTriggerFlow: SharedFlow<Unit>,
+    replayTriggerFlow: SharedFlow<Unit>,
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener
 ) {
@@ -597,7 +603,8 @@ private fun RivePlayerUI(
     var currentDay by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH).toFloat()) }
     var currentWeek by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1f) }
     var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
-    val runtimeSession = remember(file.absolutePath, bindingConfig) {
+    var reloadToken by remember { mutableStateOf(0) }
+    val runtimeSession = remember(file.absolutePath, bindingConfig, reloadToken) {
         RiveRuntimeSession(file.absolutePath, bindingConfig).apply {
             registerObserver("systemStatusBattery") { value ->
                 Log.d(TAG_BINDING_LISTENER, "systemStatusBattery -> $value")
@@ -650,45 +657,47 @@ private fun RivePlayerUI(
         return
     }
 
-    AndroidView(
-        factory = { context ->
-            try {
-                RiveAnimationView(context).apply {
-                    riveViewRef = this
-                    runtimeSession.attachView(this)
-                    val riveFile = RiveCoreFile(riveData)
-                    setRiveFile(riveFile)
-                    autoplay = true
-                    addEventListener(eventListener)
-                    runtimeSession.log("View created; autoplay=$autoplay mode=${bindingConfig.mode}")
-                    runtimeSession.bindViewModelIfNeeded(this)
-                    onRiveViewCreated(this)
+    key(reloadToken) {
+        AndroidView(
+            factory = { context ->
+                try {
+                    RiveAnimationView(context).apply {
+                        riveViewRef = this
+                        runtimeSession.attachView(this)
+                        val riveFile = RiveCoreFile(riveData)
+                        setRiveFile(riveFile)
+                        autoplay = true
+                        addEventListener(eventListener)
+                        runtimeSession.log("View created; autoplay=$autoplay mode=${bindingConfig.mode}")
+                        runtimeSession.bindViewModelIfNeeded(this)
+                        onRiveViewCreated(this)
+                    }
+                } catch (e: Exception) {
+                    Log.e("RivePlayerUI", "Error creating RiveAnimationView", e)
+                    throw e
                 }
-            } catch (e: Exception) {
-                Log.e("RivePlayerUI", "Error creating RiveAnimationView", e)
-                throw e
-            }
-        },
-        update = { riveView ->
-            try {
-                riveViewRef = riveView
-                runtimeSession.attachView(riveView)
-                val snapshot = RiveSnapshot(
-                    hour = currentHour,
-                    minute = currentMinute,
-                    second = currentSecond,
-                    battery = currentBattery,
-                    month = currentMonth,
-                    day = currentDay,
-                    week = currentWeek
-                )
-                runtimeSession.applySnapshot(riveView, snapshot)
-            } catch (e: Exception) {
-                Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
-            }
-        },
-        modifier = Modifier.fillMaxSize()
-    )
+            },
+            update = { riveView ->
+                try {
+                    riveViewRef = riveView
+                    runtimeSession.attachView(riveView)
+                    val snapshot = RiveSnapshot(
+                        hour = currentHour,
+                        minute = currentMinute,
+                        second = currentSecond,
+                        battery = currentBattery,
+                        month = currentMonth,
+                        day = currentDay,
+                        week = currentWeek
+                    )
+                    runtimeSession.applySnapshot(riveView, snapshot)
+                } catch (e: Exception) {
+                    Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+    }
 
     LaunchedEffect(crownTriggerFlow, runtimeSession) {
         crownTriggerFlow.collect {
@@ -701,6 +710,12 @@ private fun RivePlayerUI(
         powerTriggerFlow.collect {
             Log.i(TAG_BINDING, "powerTriggerFlow -> fire keyPower")
             runtimeSession.fireTrigger("keyPower")
+        }
+    }
+
+    LaunchedEffect(replayTriggerFlow) {
+        replayTriggerFlow.collect {
+            reloadToken++
         }
     }
 
@@ -970,6 +985,7 @@ private class RiveRuntimeSession(
             }
         }
     }
+
 }
 
 private fun RiveAnimationView.pushNumberInputAcrossStateMachines(
