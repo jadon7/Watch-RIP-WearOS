@@ -537,24 +537,27 @@ class RivePreviewActivity : ComponentActivity() {
         super.onPause()
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_POWER) {
+            return when (event.action) {
+                KeyEvent.ACTION_DOWN -> powerKeyDispatcher.onKeyDown(event)
+                KeyEvent.ACTION_UP -> powerKeyDispatcher.onKeyUp(event)
+                else -> true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (isStemKeyCode(keyCode)) {
-            return stemKeyDispatcher.onKeyDown(event)
-        }
-        if (keyCode == KeyEvent.KEYCODE_POWER) {
-            return powerKeyDispatcher.onKeyDown(event)
-        }
-        return super.onKeyDown(keyCode, event)
+        return if (isStemKeyCode(keyCode)) {
+            stemKeyDispatcher.onKeyDown(event)
+        } else super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        if (isStemKeyCode(keyCode)) {
-            return stemKeyDispatcher.onKeyUp(event)
-        }
-        if (keyCode == KeyEvent.KEYCODE_POWER) {
-            return powerKeyDispatcher.onKeyUp(event)
-        }
-        return super.onKeyUp(keyCode, event)
+        return if (isStemKeyCode(keyCode)) {
+            stemKeyDispatcher.onKeyUp(event)
+        } else super.onKeyUp(keyCode, event)
     }
 
     override fun onBackPressed() {
