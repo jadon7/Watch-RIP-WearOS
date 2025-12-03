@@ -85,9 +85,11 @@ private const val TAG_BINDING = "RiveBinding"
 private const val TAG_BINDING_SESSION = "RiveBindingSession"
 private const val TAG_BINDING_LISTENER = "RiveBindingListener"
 private const val STEM_KEY_FLAGS =
-    WatchKeyController.FLAG_USE_POWER_KEY or
     WatchKeyController.FLAG_CONVERT_STEM_TO_FX or
     WatchKeyController.FLAG_CONVERT_STEM_TO_F1_ONLY
+private const val POWER_KEY_FLAGS =
+    WatchKeyController.FLAG_USE_POWER_KEY or
+    WatchKeyController.FLAG_IGNORE_POWER_KEY
 
 class RivePreviewActivity : ComponentActivity() {
     // 使用强引用持有RiveView
@@ -96,7 +98,9 @@ class RivePreviewActivity : ComponentActivity() {
     private lateinit var watchKeyController: WatchKeyController
     private val activityScope = MainScope()
     private val crownTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val powerTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val stemKeyDispatcher = StemKeyDispatcher { emitCrownTrigger() }
+    private val powerKeyDispatcher = PowerKeyDispatcher { emitPowerTrigger() }
 
     // 添加错误计数器
     private var errorCount = 0
@@ -490,6 +494,7 @@ class RivePreviewActivity : ComponentActivity() {
                             batteryLevel = batteryState,
                             bindingConfig = bindingConfig,
                             crownTriggerFlow = crownTriggerFlow,
+                            powerTriggerFlow = powerTriggerFlow,
                             onRiveViewCreated = { view -> riveView = view },
                             eventListener = eventListener
                         )
@@ -524,7 +529,7 @@ class RivePreviewActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        watchKeyController.applyFlags(STEM_KEY_FLAGS)
+        watchKeyController.applyFlags(STEM_KEY_FLAGS or POWER_KEY_FLAGS)
     }
 
     override fun onPause() {
@@ -536,12 +541,18 @@ class RivePreviewActivity : ComponentActivity() {
         if (isStemKeyCode(keyCode)) {
             return stemKeyDispatcher.onKeyDown(event)
         }
+        if (keyCode == KeyEvent.KEYCODE_POWER) {
+            return powerKeyDispatcher.onKeyDown(event)
+        }
         return super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (isStemKeyCode(keyCode)) {
             return stemKeyDispatcher.onKeyUp(event)
+        }
+        if (keyCode == KeyEvent.KEYCODE_POWER) {
+            return powerKeyDispatcher.onKeyUp(event)
         }
         return super.onKeyUp(keyCode, event)
     }
@@ -556,6 +567,13 @@ class RivePreviewActivity : ComponentActivity() {
             crownTriggerFlow.emit(Unit)
         }
     }
+
+    private fun emitPowerTrigger() {
+        activityScope.launch {
+            Log.i(TAG_BINDING, "Emitting keyPower trigger from power key")
+            powerTriggerFlow.emit(Unit)
+        }
+    }
 }
 
 @Composable
@@ -564,6 +582,7 @@ private fun RivePlayerUI(
     batteryLevel: Float,
     bindingConfig: RiveBindingConfig,
     crownTriggerFlow: SharedFlow<Unit>,
+    powerTriggerFlow: SharedFlow<Unit>,
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener
 ) {
@@ -672,6 +691,13 @@ private fun RivePlayerUI(
         crownTriggerFlow.collect {
             Log.i(TAG_BINDING, "crownTriggerFlow -> fire keyCrown")
             runtimeSession.fireTrigger("keyCrown")
+        }
+    }
+
+    LaunchedEffect(powerTriggerFlow, runtimeSession) {
+        powerTriggerFlow.collect {
+            Log.i(TAG_BINDING, "powerTriggerFlow -> fire keyPower")
+            runtimeSession.fireTrigger("keyPower")
         }
     }
 
@@ -1103,6 +1129,25 @@ private class StemKeyDispatcher(
     fun onKeyUp(event: KeyEvent): Boolean {
         val pressDuration = event.eventTime - lastDownTimestamp
         Log.i(TAG_BINDING, "Stem key up after ${pressDuration}ms")
+        onTrigger()
+        return true
+    }
+}
+
+private class PowerKeyDispatcher(
+    private val onTrigger: () -> Unit
+) {
+    private var lastDownTimestamp = 0L
+
+    fun onKeyDown(event: KeyEvent): Boolean {
+        lastDownTimestamp = event.eventTime
+        Log.i(TAG_BINDING, "Power key down intercepted")
+        return true
+    }
+
+    fun onKeyUp(event: KeyEvent): Boolean {
+        val pressDuration = event.eventTime - lastDownTimestamp
+        Log.i(TAG_BINDING, "Power key up after ${pressDuration}ms")
         onTrigger()
         return true
     }

@@ -47,8 +47,8 @@ class WatchKeyController(
 
         const val FLAG_NONE = 0x00000000
         const val FLAG_USE_POWER_KEY = 0x00000001
-        const val FLAG_CONVERT_STEM_TO_FX = 0x00000002
-        const val FLAG_IGNORE_STEM_KEY = 0x00000004 // avoid using when we need callbacks
+    const val FLAG_CONVERT_STEM_TO_FX = 0x00000002
+        const val FLAG_IGNORE_STEM_KEY = 0x00000004
         const val FLAG_IGNORE_POWER_KEY = 0x00000008
         const val FLAG_USE_DEFAULT_STEM_KEY_LONG_PRESS = 0x00000010
         const val FLAG_CONVERT_STEM_TO_F1_ONLY = 0x00000020
