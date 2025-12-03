@@ -539,7 +539,7 @@ class RivePreviewActivity : ComponentActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_POWER) {
-            Log.i(TAG_BINDING, "Power key onKeyDown intercepted")
+            Log.d(TAG_BINDING, "Power key onKeyDown intercepted")
             powerKeyDispatcher.onKeyDown(event)
             return true
         }
@@ -550,7 +550,7 @@ class RivePreviewActivity : ComponentActivity() {
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_POWER) {
-            Log.i(TAG_BINDING, "Power key onKeyUp intercepted")
+            Log.d(TAG_BINDING, "Power key onKeyUp intercepted")
             powerKeyDispatcher.onKeyUp(event)
             return true
         }
