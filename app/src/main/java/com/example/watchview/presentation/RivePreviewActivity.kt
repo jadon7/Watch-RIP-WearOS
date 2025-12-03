@@ -537,25 +537,23 @@ class RivePreviewActivity : ComponentActivity() {
         super.onPause()
     }
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.keyCode == KeyEvent.KEYCODE_POWER) {
-            Log.i(TAG_BINDING, "dispatch power key action=${event.action}")
-            return when (event.action) {
-                KeyEvent.ACTION_DOWN -> powerKeyDispatcher.onKeyDown(event)
-                KeyEvent.ACTION_UP -> powerKeyDispatcher.onKeyUp(event)
-                else -> true
-            }
-        }
-        return super.dispatchKeyEvent(event)
-    }
-
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_POWER) {
+            Log.i(TAG_BINDING, "Power key onKeyDown intercepted")
+            powerKeyDispatcher.onKeyDown(event)
+            return true
+        }
         return if (isStemKeyCode(keyCode)) {
             stemKeyDispatcher.onKeyDown(event)
         } else super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_POWER) {
+            Log.i(TAG_BINDING, "Power key onKeyUp intercepted")
+            powerKeyDispatcher.onKeyUp(event)
+            return true
+        }
         return if (isStemKeyCode(keyCode)) {
             stemKeyDispatcher.onKeyUp(event)
         } else super.onKeyUp(keyCode, event)
