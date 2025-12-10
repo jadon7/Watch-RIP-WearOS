@@ -551,10 +551,16 @@ class RivePreviewActivity : ComponentActivity() {
             unregisterReceiver(batteryReceiver)
             unregisterReceiver(newFileReceiver)
             unregisterReceiver(closeReceiver) // <-- 注销新的接收器
-            // 移除 Rive 事件监听器和停止动画
-            riveView?.let {
-                it.removeEventListener(eventListener)
-                it.stop()
+            // 移除 Rive 事件监听器和停止动画，并释放资源
+            riveView?.let { view ->
+                view.removeEventListener(eventListener)
+                view.stop()
+                // 释放 Rive 文件资源，避免内存泄漏
+                try {
+                    view.controller?.release()
+                } catch (e: Exception) {
+                    Log.w("RivePreviewActivity", "Error releasing controller", e)
+                }
             }
             riveView = null
         } catch (e: Exception) {
@@ -590,10 +596,16 @@ class RivePreviewActivity : ComponentActivity() {
         Log.d("RivePreviewActivity", "onNewIntent: 收到新文件请求 path=$newFilePath, isTempFile=$newIsTempFile")
         
         if (newFilePath != null && newFilePath != _currentFilePath.value) {
-            // 停止当前的 Rive 动画
-            riveView?.let {
-                it.removeEventListener(eventListener)
-                it.stop()
+            // 停止当前的 Rive 动画并释放资源
+            riveView?.let { view ->
+                view.removeEventListener(eventListener)
+                view.stop()
+                // 释放控制器资源，避免内存泄漏
+                try {
+                    view.controller?.release()
+                } catch (e: Exception) {
+                    Log.w("RivePreviewActivity", "Error releasing controller on file switch", e)
+                }
             }
             riveView = null
             
@@ -790,6 +802,12 @@ private fun RivePlayerUI(
             riveViewRef?.let { view ->
                 view.removeEventListener(eventListener)
                 view.stop()
+                // 释放控制器资源，避免内存泄漏
+                try {
+                    view.controller?.release()
+                } catch (e: Exception) {
+                    Log.w("RivePlayerUI", "Error releasing controller on dispose", e)
+                }
             }
             riveViewRef = null
         }
@@ -858,12 +876,26 @@ private class RiveRuntimeSession(
     }
 
     fun dispose() {
-        riveView = null
+        // 清理 ViewModel 实例引用
         viewModelInstance = null
+        
+        // 释放 RiveAnimationView 资源
+        riveView?.let { view ->
+            try {
+                view.stop()
+                view.controller?.release()
+            } catch (e: Exception) {
+                Log.w(TAG_BINDING_SESSION, "Error releasing Rive resources in session dispose", e)
+            }
+        }
+        riveView = null
+        
         lastSnapshot = null
         propertyObservers.clear()
         missingViewModelProperties.clear()
         pendingTriggers.clear()
+        
+        Log.d(TAG_BINDING_SESSION, "[$filePath] Session disposed")
     }
 
     fun registerObserver(propertyName: String, observer: (Any?) -> Unit) {
