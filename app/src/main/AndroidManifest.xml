@@ -61,6 +61,7 @@
         <activity
             android:name=".presentation.RivePreviewActivity"
             android:exported="false"
+            android:launchMode="singleTask"
             android:theme="@style/NoSwipeTheme"
             android:enableOnBackInvokedCallback="true">
             <meta-data

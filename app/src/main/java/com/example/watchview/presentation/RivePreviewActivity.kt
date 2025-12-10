@@ -103,6 +103,11 @@ class RivePreviewActivity : ComponentActivity() {
     private val replayTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val stemKeyDispatcher = StemKeyDispatcher { emitCrownTrigger() }
     private val powerKeyDispatcher = PowerKeyDispatcher { emitPowerTrigger() }
+    
+    // 用于跟踪当前文件路径，支持动态更新
+    private val _currentFilePath = MutableStateFlow<String?>("")
+    private val _currentIsTempFile = MutableStateFlow(false)
+    private val _currentBindingConfig = MutableStateFlow(RiveBindingConfig())
 
     // 添加错误计数器
     private var errorCount = 0
@@ -251,34 +256,58 @@ class RivePreviewActivity : ComponentActivity() {
             actionBar?.setDisplayHomeAsUpEnabled(true)
             
             // 从 Intent 中获取文件路径和临时文件标记
-            val filePath = intent.getStringExtra("file_path") ?: return
-            val isTempFile = intent.getBooleanExtra("is_temp_file", false)
-            // 添加检查以确定文件是否为 ADB 传输的文件
-            val isExternalFile = isExternalStorageFile(filePath)
-            val bindingMode = intent.getStringExtra(EXTRA_RIVE_BINDING_MODE)?.toRiveBindingMode()
+            val initialFilePath = intent.getStringExtra("file_path") ?: return
+            val initialIsTempFile = intent.getBooleanExtra("is_temp_file", false)
+            val initialBindingMode = intent.getStringExtra(EXTRA_RIVE_BINDING_MODE)?.toRiveBindingMode()
                 ?: RiveBindingMode.HYBRID
-            val bindingConfig = RiveBindingConfig(
+            val initialBindingConfig = RiveBindingConfig(
                 viewModelName = intent.getStringExtra(EXTRA_RIVE_VIEWMODEL_NAME),
                 instanceName = intent.getStringExtra(EXTRA_RIVE_INSTANCE_NAME),
-                mode = bindingMode
+                mode = initialBindingMode
             )
+            
+            // 初始化 StateFlow
+            _currentFilePath.value = initialFilePath
+            _currentIsTempFile.value = initialIsTempFile
+            _currentBindingConfig.value = initialBindingConfig
             
             Log.d(
                 "RivePreviewActivity",
-                "File path: $filePath, isTempFile: $isTempFile, isExternalFile: $isExternalFile, bindingConfig=$bindingConfig"
+                "onCreate: File path: $initialFilePath, isTempFile: $initialIsTempFile, bindingConfig=$initialBindingConfig"
             )
             
             setContent {
                 WatchViewTheme {
+                    // 使用 StateFlow 来响应文件变化
+                    val filePath by _currentFilePath.collectAsState()
+                    val isTempFile by _currentIsTempFile.collectAsState()
+                    val bindingConfig by _currentBindingConfig.collectAsState()
+                    
                     // 使用 remember 来保持状态
                     val showDialog = remember { mutableStateOf(false) }
-                    var isSaved by remember { mutableStateOf(false) }
+                    var isSaved by remember(filePath) { mutableStateOf(false) } // 当文件变化时重置保存状态
+                    
+                    // 添加检查以确定文件是否为 ADB 传输的文件
+                    val isExternalFile = remember(filePath) { 
+                        filePath?.let { isExternalStorageFile(it) } ?: false 
+                    }
                     
                     // 添加错误状态监听
                     LaunchedEffect(errorCount) {
                         if (errorCount >= maxErrorCount) {
                             finish()
                         }
+                    }
+                    
+                    // 当文件路径为空时显示加载状态
+                    if (filePath.isNullOrEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize().background(Color.Black),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            BasicText(text = "Loading...", style = androidx.compose.ui.text.TextStyle(color = Color.White))
+                        }
+                        return@WatchViewTheme
                     }
                     
                     if (showDialog.value) {
@@ -362,7 +391,7 @@ class RivePreviewActivity : ComponentActivity() {
                                                     try {
                                                         showDialog.value = false
                                                         // 保存文件
-                                                        val tempFile = File(filePath)
+                                                        val tempFile = File(filePath!!)
                                                         Log.d("SaveDebug", "Saving file from: ${tempFile.absolutePath}")
                                                         
                                                         val riveDir = File(this@RivePreviewActivity.filesDir, "saved_rive")
@@ -495,7 +524,7 @@ class RivePreviewActivity : ComponentActivity() {
                         val batteryState by batteryLevel.collectAsState()
 
                         RivePlayerUI(
-                            file = File(filePath),
+                            file = File(filePath!!),
                             batteryLevel = batteryState,
                             bindingConfig = bindingConfig,
                             crownTriggerFlow = crownTriggerFlow,
@@ -541,6 +570,43 @@ class RivePreviewActivity : ComponentActivity() {
     override fun onPause() {
         watchKeyController.clearFlags()
         super.onPause()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        
+        // 获取新的文件路径
+        val newFilePath = intent.getStringExtra("file_path")
+        val newIsTempFile = intent.getBooleanExtra("is_temp_file", false)
+        val newBindingMode = intent.getStringExtra(EXTRA_RIVE_BINDING_MODE)?.toRiveBindingMode()
+            ?: RiveBindingMode.HYBRID
+        val newBindingConfig = RiveBindingConfig(
+            viewModelName = intent.getStringExtra(EXTRA_RIVE_VIEWMODEL_NAME),
+            instanceName = intent.getStringExtra(EXTRA_RIVE_INSTANCE_NAME),
+            mode = newBindingMode
+        )
+        
+        Log.d("RivePreviewActivity", "onNewIntent: 收到新文件请求 path=$newFilePath, isTempFile=$newIsTempFile")
+        
+        if (newFilePath != null && newFilePath != _currentFilePath.value) {
+            // 停止当前的 Rive 动画
+            riveView?.let {
+                it.removeEventListener(eventListener)
+                it.stop()
+            }
+            riveView = null
+            
+            // 重置错误计数
+            errorCount = 0
+            
+            // 更新文件路径，触发 UI 重新加载
+            _currentFilePath.value = newFilePath
+            _currentIsTempFile.value = newIsTempFile
+            _currentBindingConfig.value = newBindingConfig
+            
+            Log.d("RivePreviewActivity", "onNewIntent: 已更新文件路径，触发重新加载")
+        }
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {

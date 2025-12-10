@@ -164,6 +164,8 @@ fun DownloadScreen(
                         val intent = Intent(context, RivePreviewActivity::class.java).apply {
                             putExtra("file_path", localFilePath)
                             putExtra("is_temp_file", false)
+                            // 确保只有一个 RivePreviewActivity 实例，新文件会替换旧文件
+                            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                         }
                         context.startActivity(intent)
                         downloadStatus = "" // 清除状态
@@ -464,7 +466,9 @@ fun DownloadScreen(
                             downloadStatus = ""
                             val intent = Intent(context, RivePreviewActivity::class.java).apply {
                                 putExtra("file_path", tempFile.absolutePath)
-                                putExtra("is_temp_file", true)  
+                                putExtra("is_temp_file", true)
+                                // 确保只有一个 RivePreviewActivity 实例，新文件会替换旧文件
+                                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                             }
                             context.startActivity(intent)
                         } else {
