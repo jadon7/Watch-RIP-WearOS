@@ -673,15 +673,13 @@ private fun RivePlayerUI(
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener
 ) {
-    var currentHour by remember { mutableStateOf(Calendar.getInstance().get(Calendar.HOUR_OF_DAY).toFloat()) }
-    var currentMinute by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MINUTE).toFloat()) }
-    var currentSecond by remember { mutableStateOf(0f) }
-    var currentBattery by remember { mutableStateOf(batteryLevel) }
-    var currentMonth by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH) + 1f) }
-    var currentDay by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH).toFloat()) }
-    var currentWeek by remember { mutableStateOf(Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1f) }
+    // 使用 remember 保持引用，但不作为 Compose 状态，避免触发 recomposition
     var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
     var reloadToken by remember { mutableStateOf(0) }
+    
+    // 使用 rememberUpdatedState 来保持最新的电池电量，而不触发 recomposition
+    val currentBatteryLevel by rememberUpdatedState(batteryLevel)
+    
     val runtimeSession = remember(file.absolutePath, bindingConfig, reloadToken) {
         RiveRuntimeSession(file.absolutePath, bindingConfig).apply {
             registerObserver("systemStatusBattery") { value ->
@@ -702,26 +700,37 @@ private fun RivePlayerUI(
         }
     }
 
-    LaunchedEffect(Unit) {
+    // 使用 LaunchedEffect 直接更新 RiveView，不通过 Compose 状态
+    // 这样可以避免频繁的 recomposition，大幅提升性能
+    LaunchedEffect(riveViewRef, runtimeSession) {
+        val view = riveViewRef ?: return@LaunchedEffect
         while (isActive) {
             try {
                 val calendar = Calendar.getInstance()
-                currentHour = (calendar.get(Calendar.HOUR_OF_DAY) + calendar.get(Calendar.MINUTE) / 60f).round(1)
-                currentMinute = (calendar.get(Calendar.MINUTE) + calendar.get(Calendar.SECOND) / 60f).round(1)
-                currentSecond = (calendar.get(Calendar.SECOND) + calendar.get(Calendar.MILLISECOND) / 1000f).round(2)
-                currentMonth = (calendar.get(Calendar.MONTH) + 1).toFloat()
-                currentDay = calendar.get(Calendar.DAY_OF_MONTH).toFloat()
-                currentWeek = (calendar.get(Calendar.DAY_OF_WEEK) - 1).toFloat()
+                val hour = (calendar.get(Calendar.HOUR_OF_DAY) + calendar.get(Calendar.MINUTE) / 60f).round(1)
+                val minute = (calendar.get(Calendar.MINUTE) + calendar.get(Calendar.SECOND) / 60f).round(1)
+                val second = (calendar.get(Calendar.SECOND) + calendar.get(Calendar.MILLISECOND) / 1000f).round(2)
+                val month = (calendar.get(Calendar.MONTH) + 1).toFloat()
+                val day = calendar.get(Calendar.DAY_OF_MONTH).toFloat()
+                val week = (calendar.get(Calendar.DAY_OF_WEEK) - 1).toFloat()
+                
+                val snapshot = RiveSnapshot(
+                    hour = hour,
+                    minute = minute,
+                    second = second,
+                    battery = currentBatteryLevel,
+                    month = month,
+                    day = day,
+                    week = week
+                )
+                runtimeSession.applySnapshot(view, snapshot)
+                
                 delay(1000L)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 Log.e("RivePlayerUI", "Error updating time", e)
             }
         }
-    }
-
-    LaunchedEffect(batteryLevel) {
-        currentBattery = batteryLevel
     }
 
     val riveData = riveBytes
@@ -755,20 +764,13 @@ private fun RivePlayerUI(
                     throw e
                 }
             },
+            // update 回调只用于必要的视图重新绑定，不再用于数据更新
             update = { riveView ->
                 try {
-                    riveViewRef = riveView
-                    runtimeSession.attachView(riveView)
-                    val snapshot = RiveSnapshot(
-                        hour = currentHour,
-                        minute = currentMinute,
-                        second = currentSecond,
-                        battery = currentBattery,
-                        month = currentMonth,
-                        day = currentDay,
-                        week = currentWeek
-                    )
-                    runtimeSession.applySnapshot(riveView, snapshot)
+                    if (riveViewRef !== riveView) {
+                        riveViewRef = riveView
+                        runtimeSession.attachView(riveView)
+                    }
                 } catch (e: Exception) {
                     Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
                 }
@@ -870,6 +872,9 @@ private class RiveRuntimeSession(
     var viewModelInstance: ViewModelInstance? = null
         private set
     private val pendingTriggers = ArrayDeque<String>()
+    
+    // 标记文件是否支持 ViewModel 绑定
+    private var viewModelAvailable: Boolean = true
 
     fun attachView(view: RiveAnimationView) {
         riveView = view
@@ -920,47 +925,80 @@ private class RiveRuntimeSession(
             return
         }
 
-        val controller = riveAnimationView.controller ?: return
-        val artboard = controller.activeArtboard ?: riveAnimationView.file?.firstArtboard ?: return
-        val file = riveAnimationView.file ?: return
+        try {
+            val controller = riveAnimationView.controller
+            if (controller == null) {
+                log("Controller not available, will use state machine fallback")
+                return
+            }
+            
+            val artboard = controller.activeArtboard ?: riveAnimationView.file?.firstArtboard
+            if (artboard == null) {
+                log("Artboard not available, will use state machine fallback")
+                return
+            }
+            
+            val file = riveAnimationView.file
+            if (file == null) {
+                log("Rive file not available, will use state machine fallback")
+                return
+            }
 
-        val existing = controller.stateMachines.firstOrNull { it.viewModelInstance != null }?.viewModelInstance
-        if (existing != null && config.viewModelName.isNullOrBlank() && config.instanceName.isNullOrBlank()) {
-            viewModelInstance = existing
-            log("Reusing existing ViewModel instance ${existing.name}")
+            // 尝试复用已存在的 ViewModel 实例
+            val existing = controller.stateMachines.firstOrNull { it.viewModelInstance != null }?.viewModelInstance
+            if (existing != null && config.viewModelName.isNullOrBlank() && config.instanceName.isNullOrBlank()) {
+                viewModelInstance = existing
+                log("Reusing existing ViewModel instance ${existing.name}")
+                dispatchPendingTriggers()
+                return
+            }
+
+            // 尝试获取 ViewModel，如果不存在则优雅降级到 state machine 模式
+            val viewModel = when {
+                !config.viewModelName.isNullOrBlank() -> runCatching {
+                    file.getViewModelByName(config.viewModelName!!)
+                }.onFailure {
+                    Log.w(TAG_BINDING_SESSION, "[$filePath] ViewModel ${config.viewModelName} not found", it)
+                }.getOrNull()
+                else -> runCatching {
+                    file.defaultViewModelForArtboard(artboard)
+                }.onFailure {
+                    // 这个 Rive 文件没有 ViewModel，这是正常的情况
+                    Log.i(TAG_BINDING_SESSION, "[$filePath] No default ViewModel for artboard (this is normal for files without Databinding)")
+                }.getOrNull()
+            }
+            
+            if (viewModel == null) {
+                // 文件没有 ViewModel，这不是错误，将使用纯 state machine 模式
+                log("No ViewModel available, animation will play using state machine inputs only")
+                return
+            }
+
+            // 尝试创建 ViewModel 实例
+            val instance = when {
+                !config.instanceName.isNullOrBlank() -> runCatching {
+                    viewModel.createInstanceFromName(config.instanceName!!)
+                }.onFailure {
+                    Log.w(TAG_BINDING_SESSION, "[$filePath] Instance ${config.instanceName} not found, fallback to default")
+                }.getOrNull() ?: runCatching { viewModel.createDefaultInstance() }.getOrNull()
+                else -> runCatching { viewModel.createDefaultInstance() }.getOrNull()
+            }
+            
+            if (instance == null) {
+                Log.w(TAG_BINDING_SESSION, "[$filePath] Failed to create ViewModel instance, will use state machine fallback")
+                return
+            }
+
+            controller.stateMachines.forEach { it.viewModelInstance = instance }
+            artboard.viewModelInstance = instance
+            viewModelInstance = instance
+            log("Bound ViewModel=${viewModel.name} instance=${instance.name ?: "default"}")
             dispatchPendingTriggers()
-            return
+        } catch (e: Exception) {
+            // 捕获所有异常，确保即使 ViewModel 绑定失败，动画也能播放
+            Log.w(TAG_BINDING_SESSION, "[$filePath] ViewModel binding failed, will use state machine fallback", e)
+            viewModelInstance = null
         }
-
-        val viewModel = when {
-            !config.viewModelName.isNullOrBlank() -> runCatching {
-                file.getViewModelByName(config.viewModelName!!)
-            }.onFailure {
-                Log.w(TAG_BINDING_SESSION, "[$filePath] ViewModel ${config.viewModelName} not found", it)
-            }.getOrNull()
-            else -> file.defaultViewModelForArtboard(artboard)
-        } ?: run {
-            Log.w(TAG_BINDING_SESSION, "[$filePath] No ViewModel resolved for config=$config")
-            return
-        }
-
-        val instance = when {
-            !config.instanceName.isNullOrBlank() -> runCatching {
-                viewModel.createInstanceFromName(config.instanceName!!)
-            }.onFailure {
-                Log.w(TAG_BINDING_SESSION, "[$filePath] Instance ${config.instanceName} not found, fallback to default")
-            }.getOrNull() ?: viewModel.createDefaultInstance()
-            else -> viewModel.createDefaultInstance()
-        } ?: run {
-            Log.w(TAG_BINDING_SESSION, "[$filePath] Failed to create ViewModel instance for ${viewModel.name}")
-            return
-        }
-
-        controller.stateMachines.forEach { it.viewModelInstance = instance }
-        artboard.viewModelInstance = instance
-        viewModelInstance = instance
-        log("Bound ViewModel=${viewModel.name} instance=${instance.name ?: "default"}")
-        dispatchPendingTriggers()
     }
 
     fun applySnapshot(riveAnimationView: RiveAnimationView, snapshot: RiveSnapshot) {
