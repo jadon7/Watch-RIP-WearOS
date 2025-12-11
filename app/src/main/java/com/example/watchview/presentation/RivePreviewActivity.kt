@@ -18,6 +18,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.rotary.onRotaryScrollEvent
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -74,7 +78,8 @@ private data class RiveSnapshot(
     val battery: Float,
     val month: Float,
     val day: Float,
-    val week: Float
+    val week: Float,
+    val deviceKnob: Float = 0f
 )
 
 private const val EXTRA_RIVE_VIEWMODEL_NAME = "extra_rive_viewmodel_name"
@@ -101,6 +106,9 @@ class RivePreviewActivity : ComponentActivity() {
     private val crownTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val powerTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val replayTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    
+    // 旋钮值增量流，用于旋钮旋转时传递增量
+    private val rotaryKnobDeltaFlow = MutableSharedFlow<Float>(extraBufferCapacity = 64)
     private val stemKeyDispatcher = StemKeyDispatcher { emitCrownTrigger() }
     private val powerKeyDispatcher = PowerKeyDispatcher { emitPowerTrigger() }
     
@@ -530,8 +538,15 @@ class RivePreviewActivity : ComponentActivity() {
                             crownTriggerFlow = crownTriggerFlow,
                             powerTriggerFlow = powerTriggerFlow,
                             replayTriggerFlow = replayTriggerFlow,
+                            rotaryKnobDeltaFlow = rotaryKnobDeltaFlow,
                             onRiveViewCreated = { view -> riveView = view },
-                            eventListener = eventListener
+                            eventListener = eventListener,
+                            onRotaryKnobDelta = { delta ->
+                                // 旋钮旋转时发送增量值
+                                activityScope.launch {
+                                    rotaryKnobDeltaFlow.emit(delta)
+                                }
+                            }
                         )
                     }
                 }
@@ -670,9 +685,16 @@ private fun RivePlayerUI(
     crownTriggerFlow: SharedFlow<Unit>,
     powerTriggerFlow: SharedFlow<Unit>,
     replayTriggerFlow: SharedFlow<Unit>,
+    rotaryKnobDeltaFlow: SharedFlow<Float>,
     onRiveViewCreated: (RiveAnimationView) -> Unit,
-    eventListener: RiveFileController.RiveEventListener
+    eventListener: RiveFileController.RiveEventListener,
+    onRotaryKnobDelta: (Float) -> Unit
 ) {
+    // 用于接收旋钮旋转的焦点请求器
+    val focusRequester = remember { FocusRequester() }
+    
+    // 当前旋钮值，精度为小数点后两位
+    var currentKnobValue by remember { mutableStateOf(0f) }
     // 使用 remember 保持引用，但不作为 Compose 状态，避免触发 recomposition
     var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
     var reloadToken by remember { mutableStateOf(0) }
@@ -721,7 +743,8 @@ private fun RivePlayerUI(
                     battery = currentBatteryLevel,
                     month = month,
                     day = day,
-                    week = week
+                    week = week,
+                    deviceKnob = currentKnobValue
                 )
                 runtimeSession.applySnapshot(view, snapshot)
                 
@@ -730,6 +753,19 @@ private fun RivePlayerUI(
                 if (e is CancellationException) throw e
                 Log.e("RivePlayerUI", "Error updating time", e)
             }
+        }
+    }
+    
+    // 监听旋钮增量流，实时更新 deviceKnob 值
+    LaunchedEffect(rotaryKnobDeltaFlow, riveViewRef, runtimeSession) {
+        rotaryKnobDeltaFlow.collect { delta ->
+            val view = riveViewRef ?: return@collect
+            // 读取当前值并添加增量，保留两位小数
+            currentKnobValue = (currentKnobValue + delta).round(2)
+            Log.d("RotaryKnob", "deviceKnob updated: $currentKnobValue (delta: $delta)")
+            
+            // 立即更新 Rive ViewModel
+            runtimeSession.updateDeviceKnob(view, currentKnobValue)
         }
     }
 
@@ -744,39 +780,58 @@ private fun RivePlayerUI(
         return
     }
 
+    // 请求焦点以接收旋钮事件
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
+    
     key(reloadToken) {
-        AndroidView(
-            factory = { context ->
-                try {
-                    RiveAnimationView(context).apply {
-                        riveViewRef = this
-                        runtimeSession.attachView(this)
-                        val riveFile = RiveCoreFile(riveData)
-                        setRiveFile(riveFile)
-                        autoplay = true
-                        addEventListener(eventListener)
-                        runtimeSession.log("View created; autoplay=$autoplay mode=${bindingConfig.mode}")
-                        runtimeSession.bindViewModelIfNeeded(this)
-                        onRiveViewCreated(this)
-                    }
-                } catch (e: Exception) {
-                    Log.e("RivePlayerUI", "Error creating RiveAnimationView", e)
-                    throw e
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onRotaryScrollEvent { event ->
+                    // 根据滚动方向确定增量，每次固定 ±0.05
+                    val delta = if (event.verticalScrollPixels > 0) 0.05f else -0.05f
+                    onRotaryKnobDelta(delta)
+                    Log.d("RotaryKnob", "Rotary scroll event: pixels=${event.verticalScrollPixels}, delta=$delta")
+                    true // 消费事件
                 }
-            },
-            // update 回调只用于必要的视图重新绑定，不再用于数据更新
-            update = { riveView ->
-                try {
-                    if (riveViewRef !== riveView) {
-                        riveViewRef = riveView
-                        runtimeSession.attachView(riveView)
+                .focusRequester(focusRequester)
+                .focusable()
+        ) {
+            AndroidView(
+                factory = { context ->
+                    try {
+                        RiveAnimationView(context).apply {
+                            riveViewRef = this
+                            runtimeSession.attachView(this)
+                            val riveFile = RiveCoreFile(riveData)
+                            setRiveFile(riveFile)
+                            autoplay = true
+                            addEventListener(eventListener)
+                            runtimeSession.log("View created; autoplay=$autoplay mode=${bindingConfig.mode}")
+                            runtimeSession.bindViewModelIfNeeded(this)
+                            onRiveViewCreated(this)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("RivePlayerUI", "Error creating RiveAnimationView", e)
+                        throw e
                     }
-                } catch (e: Exception) {
-                    Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+                },
+                // update 回调只用于必要的视图重新绑定，不再用于数据更新
+                update = { riveView ->
+                    try {
+                        if (riveViewRef !== riveView) {
+                            riveViewRef = riveView
+                            runtimeSession.attachView(riveView)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("RivePlayerUI", "Error updating RiveAnimationView", e)
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 
     LaunchedEffect(crownTriggerFlow, runtimeSession) {
@@ -1042,6 +1097,34 @@ private class RiveRuntimeSession(
                 if (needsFallback) {
                     riveAnimationView.pushNumberInputAcrossStateMachines(name, value, this)
                 }
+            }
+        }
+    }
+
+    /**
+     * 实时更新 deviceKnob 值到 Rive ViewModel
+     * 这个方法专门用于旋钮旋转时的增量更新，不走 snapshot 机制
+     * @param riveAnimationView Rive 动画视图
+     * @param value 当前的旋钮值（已累加增量后的值）
+     */
+    fun updateDeviceKnob(riveAnimationView: RiveAnimationView, value: Float) {
+        val viewModel = viewModelInstance
+        val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
+        
+        if (hasViewModel && viewModel != null) {
+            viewModel.setNumberProperty("deviceKnob", value, this)
+        }
+        
+        // Hybrid 模式下也尝试更新 state machine
+        val shouldTouchStateMachines = config.mode != RiveBindingMode.VIEWMODEL_ONLY
+        if (shouldTouchStateMachines) {
+            val needsFallback = when (config.mode) {
+                RiveBindingMode.STATE_MACHINE_ONLY -> true
+                RiveBindingMode.VIEWMODEL_ONLY -> false
+                RiveBindingMode.HYBRID -> !hasViewModel || missingViewModelProperties.contains("deviceKnob")
+            }
+            if (needsFallback) {
+                riveAnimationView.pushNumberInputAcrossStateMachines("deviceKnob", value, this)
             }
         }
     }
