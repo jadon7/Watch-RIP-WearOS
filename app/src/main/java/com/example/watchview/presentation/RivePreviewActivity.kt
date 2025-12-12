@@ -89,6 +89,8 @@ private const val EXTRA_RIVE_BINDING_MODE = "extra_rive_binding_mode"
 private const val TAG_BINDING = "RiveBinding"
 private const val TAG_BINDING_SESSION = "RiveBindingSession"
 private const val TAG_BINDING_LISTENER = "RiveBindingListener"
+// 每度旋转映射到的 deviceKnob 增量（调节敏感度时调整此值）
+private const val KNOB_DELTA_PER_DEGREE = 0.01f
 private const val STEM_KEY_FLAGS =
     WatchKeyController.FLAG_CONVERT_STEM_TO_FX or
     WatchKeyController.FLAG_CONVERT_STEM_TO_F1_ONLY
@@ -693,11 +695,13 @@ private fun RivePlayerUI(
     // 用于接收旋钮旋转的焦点请求器
     val focusRequester = remember { FocusRequester() }
     
+    var reloadToken by remember { mutableStateOf(0) }
+
     // 当前旋钮值，精度为小数点后两位
-    var currentKnobValue by remember { mutableStateOf(0f) }
+    var currentKnobValue by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
+    var deviceKnobDisplay by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
     // 使用 remember 保持引用，但不作为 Compose 状态，避免触发 recomposition
     var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
-    var reloadToken by remember { mutableStateOf(0) }
     
     // 使用 rememberUpdatedState 来保持最新的电池电量，而不触发 recomposition
     val currentBatteryLevel by rememberUpdatedState(batteryLevel)
@@ -720,6 +724,14 @@ private fun RivePlayerUI(
                 .onFailure { Log.e("RivePlayerUI", "Failed to read Rive file: ${file.absolutePath}", it) }
                 .getOrNull()
         }
+    }
+
+    LaunchedEffect(riveViewRef, runtimeSession) {
+        val view = riveViewRef ?: return@LaunchedEffect
+        val knob = runtimeSession.readDeviceKnob(view)
+        val rounded = knob.round(2)
+        currentKnobValue = rounded
+        deviceKnobDisplay = rounded
     }
 
     // 使用 LaunchedEffect 直接更新 RiveView，不通过 Compose 状态
@@ -760,12 +772,10 @@ private fun RivePlayerUI(
     LaunchedEffect(rotaryKnobDeltaFlow, riveViewRef, runtimeSession) {
         rotaryKnobDeltaFlow.collect { delta ->
             val view = riveViewRef ?: return@collect
-            // 读取当前值并添加增量，保留两位小数
-            currentKnobValue = (currentKnobValue + delta).round(2)
-            Log.d("RotaryKnob", "deviceKnob updated: $currentKnobValue (delta: $delta)")
-            
-            // 立即更新 Rive ViewModel
-            runtimeSession.updateDeviceKnob(view, currentKnobValue)
+            val next = runtimeSession.adjustDeviceKnob(view, delta)
+            currentKnobValue = next
+            deviceKnobDisplay = runtimeSession.readDeviceKnob(view).round(2)
+            Log.d("RotaryKnob", "deviceKnob updated: $next (delta: $delta)")
         }
     }
 
@@ -784,14 +794,25 @@ private fun RivePlayerUI(
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
     }
+
+    // 定期从 Rive Databinding 读取当前值，确保显示为真实值而不是本地缓存
+    LaunchedEffect(riveViewRef, runtimeSession) {
+        val view = riveViewRef ?: return@LaunchedEffect
+        while (isActive) {
+            val live = runtimeSession.readDeviceKnob(view).round(2)
+            deviceKnobDisplay = live
+            currentKnobValue = live
+            delay(300L)
+        }
+    }
     
     key(reloadToken) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .onRotaryScrollEvent { event ->
-                    // 根据滚动方向确定增量，每次固定 ±0.05
-                    val delta = if (event.verticalScrollPixels > 0) 0.05f else -0.05f
+                    // 将旋转角度（系统提供的 scroll 像素）映射为按度数的增量
+                    val delta = event.verticalScrollPixels * KNOB_DELTA_PER_DEGREE
                     onRotaryKnobDelta(delta)
                     Log.d("RotaryKnob", "Rotary scroll event: pixels=${event.verticalScrollPixels}, delta=$delta")
                     true // 消费事件
@@ -810,6 +831,14 @@ private fun RivePlayerUI(
                             autoplay = true
                             addEventListener(eventListener)
                             runtimeSession.log("View created; autoplay=$autoplay mode=${bindingConfig.mode}")
+                            // 确保所有 state machine 启动，保证输入立即生效
+                            controller?.stateMachines?.forEach { sm ->
+                                try {
+                                    play(sm.name)
+                                } catch (e: Exception) {
+                                    Log.w(TAG_BINDING, "Failed to start state machine ${sm.name}", e)
+                                }
+                            }
                             runtimeSession.bindViewModelIfNeeded(this)
                             onRiveViewCreated(this)
                         }
@@ -830,6 +859,14 @@ private fun RivePlayerUI(
                     }
                 },
                 modifier = Modifier.fillMaxSize()
+            )
+            BasicText(
+                text = "deviceKnob: ${"%.2f".format(deviceKnobDisplay)}",
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                style = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp, textAlign = TextAlign.Center)
             )
         }
     }
@@ -922,6 +959,7 @@ private class RiveRuntimeSession(
 ) {
     private var riveView: RiveAnimationView? = null
     private var lastSnapshot: RiveSnapshot? = null
+    private var lastKnownDeviceKnob = 0f
     private val propertyObservers = mutableMapOf<String, MutableList<(Any?) -> Unit>>()
     val missingViewModelProperties = mutableSetOf<String>()
     var viewModelInstance: ViewModelInstance? = null
@@ -1065,40 +1103,41 @@ private class RiveRuntimeSession(
         val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
 
         val numberPayload = mapOf(
-            "timeHour" to snapshot.hour,
-            "timeMinute" to snapshot.minute,
-            "timeSecond" to snapshot.second,
-            "systemStatusBattery" to snapshot.battery,
-            "dateMonth" to snapshot.month,
-            "dateDay" to snapshot.day,
-            "dateWeek" to snapshot.week
+            "deviceKnob" to snapshot.deviceKnob
         )
+        lastKnownDeviceKnob = snapshot.deviceKnob
 
         if (hasViewModel && viewModel != null) {
             numberPayload.forEach { (name, value) ->
                 viewModel.setNumberProperty(name, value, this)
             }
-            val amPm = if (snapshot.hour >= 12f) "PM" else "AM"
-            viewModel.setStringProperty("timePeriod", amPm, this)
-            viewModel.setBooleanProperty("systemStatusCharging", snapshot.battery >= 99f, this)
-            if (previous == null || previous.minute.toInt() != snapshot.minute.toInt()) {
-                viewModel.triggerProperty("updateDisplay", this)
-            }
         }
+    }
 
-        val shouldTouchStateMachines = config.mode != RiveBindingMode.VIEWMODEL_ONLY
-        if (shouldTouchStateMachines) {
-            numberPayload.forEach { (name, value) ->
-                val needsFallback = when (config.mode) {
-                    RiveBindingMode.STATE_MACHINE_ONLY -> true
-                    RiveBindingMode.VIEWMODEL_ONLY -> false
-                    RiveBindingMode.HYBRID -> !hasViewModel || missingViewModelProperties.contains(name)
+    fun readDeviceKnob(riveAnimationView: RiveAnimationView): Float {
+        val viewModel = viewModelInstance
+        if (viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY) {
+            try {
+                val property = viewModel.getNumberProperty("deviceKnob")
+                if (property != null) {
+                    val value = property.value
+                    lastKnownDeviceKnob = value
+                    markPropertyAvailable("deviceKnob")
+                    return value
                 }
-                if (needsFallback) {
-                    riveAnimationView.pushNumberInputAcrossStateMachines(name, value, this)
-                }
+                markPropertyMissing("deviceKnob")
+            } catch (e: Exception) {
+                markPropertyMissing("deviceKnob", e)
             }
         }
+        return lastKnownDeviceKnob
+    }
+
+    fun adjustDeviceKnob(riveAnimationView: RiveAnimationView, delta: Float): Float {
+        val base = readDeviceKnob(riveAnimationView)
+        val next = (base + delta).round(2)
+        updateDeviceKnob(riveAnimationView, next)
+        return next
     }
 
     /**
@@ -1110,22 +1149,17 @@ private class RiveRuntimeSession(
     fun updateDeviceKnob(riveAnimationView: RiveAnimationView, value: Float) {
         val viewModel = viewModelInstance
         val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
+        lastKnownDeviceKnob = value
         
         if (hasViewModel && viewModel != null) {
             viewModel.setNumberProperty("deviceKnob", value, this)
         }
         
         // Hybrid 模式下也尝试更新 state machine
+        // 如果只要 ViewModel 写入，则跳过状态机
         val shouldTouchStateMachines = config.mode != RiveBindingMode.VIEWMODEL_ONLY
-        if (shouldTouchStateMachines) {
-            val needsFallback = when (config.mode) {
-                RiveBindingMode.STATE_MACHINE_ONLY -> true
-                RiveBindingMode.VIEWMODEL_ONLY -> false
-                RiveBindingMode.HYBRID -> !hasViewModel || missingViewModelProperties.contains("deviceKnob")
-            }
-            if (needsFallback) {
-                riveAnimationView.pushNumberInputAcrossStateMachines("deviceKnob", value, this)
-            }
+        if (shouldTouchStateMachines && config.mode == RiveBindingMode.STATE_MACHINE_ONLY) {
+            riveAnimationView.pushNumberInputAcrossStateMachines("deviceKnob", value, this)
         }
     }
 
@@ -1212,13 +1246,9 @@ private fun RiveAnimationView.pushNumberInputAcrossStateMachines(
     value: Float,
     session: RiveRuntimeSession
 ) {
-    val artboard = file?.firstArtboard ?: return
+    val artboard = controller?.activeArtboard ?: file?.firstArtboard ?: return
     val playing = playingStateMachines
-    val targetMachines = if (playing.isNotEmpty()) {
-        playing.map { it.name }
-    } else {
-        artboard.stateMachineNames ?: emptyList()
-    }
+    val targetMachines = if (playing.isNotEmpty()) playing.map { it.name } else artboard.stateMachineNames ?: emptyList()
     var applied = false
     targetMachines.forEach { machineName ->
         val stateMachine = artboard.stateMachine(machineName)
