@@ -57,6 +57,7 @@ import android.content.Context.VIBRATOR_MANAGER_SERVICE
 import android.content.Context.VIBRATOR_SERVICE
 import android.os.Build
 import android.os.Environment
+import android.os.SystemClock
 import android.widget.Toast
 import com.example.watchview.presentation.model.DownloadType
 import com.example.watchview.presentation.ui.ACTION_NEW_ADB_FILE
@@ -91,6 +92,11 @@ private const val TAG_BINDING_SESSION = "RiveBindingSession"
 private const val TAG_BINDING_LISTENER = "RiveBindingListener"
 // 每度旋转映射到的 deviceKnob 增量（调节敏感度时调整此值）
 private const val KNOB_DELTA_PER_DEGREE = 0.01f
+// 连续循环驱动 deviceKnob 开关与参数
+private const val ENABLE_DEVICE_KNOB_LOOP = false
+private const val DEVICE_KNOB_LOOP_MAX = 13f
+private const val DEVICE_KNOB_LOOP_DURATION_MS = 4000L
+private const val DEVICE_KNOB_LOOP_INTERVAL_MS = 1000L
 private const val STEM_KEY_FLAGS =
     WatchKeyController.FLAG_CONVERT_STEM_TO_FX or
     WatchKeyController.FLAG_CONVERT_STEM_TO_F1_ONLY
@@ -768,14 +774,16 @@ private fun RivePlayerUI(
         }
     }
     
-    // 监听旋钮增量流，实时更新 deviceKnob 值
-    LaunchedEffect(rotaryKnobDeltaFlow, riveViewRef, runtimeSession) {
-        rotaryKnobDeltaFlow.collect { delta ->
-            val view = riveViewRef ?: return@collect
-            val next = runtimeSession.adjustDeviceKnob(view, delta)
-            currentKnobValue = next
-            deviceKnobDisplay = runtimeSession.readDeviceKnob(view).round(2)
-            Log.d("RotaryKnob", "deviceKnob updated: $next (delta: $delta)")
+    // 监听旋钮增量流，实时更新 deviceKnob 值（仅在循环模式关闭时启用）
+    if (!ENABLE_DEVICE_KNOB_LOOP) {
+        LaunchedEffect(rotaryKnobDeltaFlow, riveViewRef, runtimeSession) {
+            rotaryKnobDeltaFlow.collect { delta ->
+                val view = riveViewRef ?: return@collect
+                val next = runtimeSession.adjustDeviceKnob(view, delta)
+                currentKnobValue = next
+                deviceKnobDisplay = runtimeSession.readDeviceKnob(view).round(2)
+                Log.d("RotaryKnob", "deviceKnob updated: $next (delta: $delta)")
+            }
         }
     }
 
@@ -801,8 +809,22 @@ private fun RivePlayerUI(
         while (isActive) {
             val live = runtimeSession.readDeviceKnob(view).round(2)
             deviceKnobDisplay = live
-            currentKnobValue = live
             delay(300L)
+        }
+    }
+
+    // 循环驱动 deviceKnob：2s 内从 0 到 13 循环，替代旋钮控制
+    if (ENABLE_DEVICE_KNOB_LOOP) {
+        LaunchedEffect(riveViewRef, runtimeSession) {
+            val view = riveViewRef ?: return@LaunchedEffect
+            while (isActive) {
+                val phase = (SystemClock.uptimeMillis() % DEVICE_KNOB_LOOP_DURATION_MS).toFloat() / DEVICE_KNOB_LOOP_DURATION_MS
+                val value = (phase * DEVICE_KNOB_LOOP_MAX).round(2)
+                currentKnobValue = value
+                deviceKnobDisplay = value
+                runtimeSession.updateDeviceKnob(view, value)
+                delay(DEVICE_KNOB_LOOP_INTERVAL_MS)
+            }
         }
     }
     
@@ -811,10 +833,12 @@ private fun RivePlayerUI(
             modifier = Modifier
                 .fillMaxSize()
                 .onRotaryScrollEvent { event ->
-                    // 将旋转角度（系统提供的 scroll 像素）映射为按度数的增量
-                    val delta = event.verticalScrollPixels * KNOB_DELTA_PER_DEGREE
-                    onRotaryKnobDelta(delta)
-                    Log.d("RotaryKnob", "Rotary scroll event: pixels=${event.verticalScrollPixels}, delta=$delta")
+                    if (!ENABLE_DEVICE_KNOB_LOOP) {
+                        // 将旋转角度（系统提供的 scroll 像素）映射为按度数的增量
+                        val delta = event.verticalScrollPixels * KNOB_DELTA_PER_DEGREE
+                        onRotaryKnobDelta(delta)
+                        Log.d("RotaryKnob", "Rotary scroll event: pixels=${event.verticalScrollPixels}, delta=$delta")
+                    }
                     true // 消费事件
                 }
                 .focusRequester(focusRequester)
@@ -1099,19 +1123,7 @@ private class RiveRuntimeSession(
         if (snapshot == previous) return
         lastSnapshot = snapshot
 
-        val viewModel = viewModelInstance
-        val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
-
-        val numberPayload = mapOf(
-            "deviceKnob" to snapshot.deviceKnob
-        )
-        lastKnownDeviceKnob = snapshot.deviceKnob
-
-        if (hasViewModel && viewModel != null) {
-            numberPayload.forEach { (name, value) ->
-                viewModel.setNumberProperty(name, value, this)
-            }
-        }
+        // deviceKnob 仅在旋钮事件时写入，避免非用户操作的周期性写入
     }
 
     fun readDeviceKnob(riveAnimationView: RiveAnimationView): Float {
@@ -1135,7 +1147,8 @@ private class RiveRuntimeSession(
 
     fun adjustDeviceKnob(riveAnimationView: RiveAnimationView, delta: Float): Float {
         val base = readDeviceKnob(riveAnimationView)
-        val next = (base + delta).round(2)
+        val next = (base + delta).coerceAtLeast(0f).round(2)
+        if (next == base) return base
         updateDeviceKnob(riveAnimationView, next)
         return next
     }
@@ -1149,10 +1162,10 @@ private class RiveRuntimeSession(
     fun updateDeviceKnob(riveAnimationView: RiveAnimationView, value: Float) {
         val viewModel = viewModelInstance
         val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
-        lastKnownDeviceKnob = value
+        lastKnownDeviceKnob = value.coerceAtLeast(0f)
         
         if (hasViewModel && viewModel != null) {
-            viewModel.setNumberProperty("deviceKnob", value, this)
+            viewModel.setNumberProperty("deviceKnob", lastKnownDeviceKnob, this)
         }
         
         // Hybrid 模式下也尝试更新 state machine
