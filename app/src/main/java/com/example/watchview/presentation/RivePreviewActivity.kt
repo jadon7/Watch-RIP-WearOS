@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.compose.runtime.collectAsState
+import kotlin.math.abs
 import android.util.Log
 import app.rive.runtime.kotlin.controllers.RiveFileController
 import android.os.VibrationEffect
@@ -91,7 +92,11 @@ private const val TAG_BINDING = "RiveBinding"
 private const val TAG_BINDING_SESSION = "RiveBindingSession"
 private const val TAG_BINDING_LISTENER = "RiveBindingListener"
 // 每度旋转映射到的 deviceKnob 增量（调节敏感度时调整此值）
-private const val KNOB_DELTA_PER_DEGREE = 0.01f
+private const val KNOB_DELTA_PER_DEGREE = 0.05f
+// 平滑参数：单帧趋近比例、最大单帧步长、平滑帧间隔
+private const val DEVICE_KNOB_SMOOTHING_FACTOR = 0.18f
+private const val DEVICE_KNOB_MAX_STEP_PER_TICK = 0.3f
+private const val DEVICE_KNOB_SMOOTHING_INTERVAL_MS = 16L
 // 连续循环驱动 deviceKnob 开关与参数
 private const val ENABLE_DEVICE_KNOB_LOOP = false
 private const val DEVICE_KNOB_LOOP_MAX = 13f
@@ -578,12 +583,6 @@ class RivePreviewActivity : ComponentActivity() {
             riveView?.let { view ->
                 view.removeEventListener(eventListener)
                 view.stop()
-                // 释放 Rive 文件资源，避免内存泄漏
-                try {
-                    view.controller?.release()
-                } catch (e: Exception) {
-                    Log.w("RivePreviewActivity", "Error releasing controller", e)
-                }
             }
             riveView = null
         } catch (e: Exception) {
@@ -619,27 +618,14 @@ class RivePreviewActivity : ComponentActivity() {
         Log.d("RivePreviewActivity", "onNewIntent: 收到新文件请求 path=$newFilePath, isTempFile=$newIsTempFile")
         
         if (newFilePath != null && newFilePath != _currentFilePath.value) {
-            // 停止当前的 Rive 动画并释放资源
-            riveView?.let { view ->
-                view.removeEventListener(eventListener)
-                view.stop()
-                // 释放控制器资源，避免内存泄漏
-                try {
-                    view.controller?.release()
-                } catch (e: Exception) {
-                    Log.w("RivePreviewActivity", "Error releasing controller on file switch", e)
-                }
-            }
-            riveView = null
-            
             // 重置错误计数
             errorCount = 0
-            
-            // 更新文件路径，触发 UI 重新加载
+
+            // 更新文件路径，触发 UI 重新加载（让新的加载流程与首次打开一致）
             _currentFilePath.value = newFilePath
             _currentIsTempFile.value = newIsTempFile
             _currentBindingConfig.value = newBindingConfig
-            
+
             Log.d("RivePreviewActivity", "onNewIntent: 已更新文件路径，触发重新加载")
         }
     }
@@ -738,6 +724,7 @@ private fun RivePlayerUI(
         val knob = runtimeSession.readDeviceKnob(view)
         val rounded = knob.round(2)
         currentKnobValue = rounded
+        targetKnobValue = rounded
         deviceKnobDisplay = rounded
     }
 
@@ -780,8 +767,12 @@ private fun RivePlayerUI(
         LaunchedEffect(rotaryKnobDeltaFlow, riveViewRef, runtimeSession) {
             rotaryKnobDeltaFlow.collect { delta ->
                 val view = riveViewRef ?: return@collect
-                val nextTarget = (targetKnobValue + delta).coerceAtLeast(0f)
+                val base = runtimeSession.readDeviceKnob(view).coerceAtLeast(0f)
+                val nextTarget = (base + delta).coerceAtLeast(0f)
                 targetKnobValue = nextTarget
+                currentKnobValue = base
+                deviceKnobDisplay = base.round(2)
+                runtimeSession.updateDeviceKnob(view, base)
                 Log.d("RotaryKnob", "deviceKnob target updated: $nextTarget (delta: $delta)")
             }
         }
@@ -809,6 +800,11 @@ private fun RivePlayerUI(
         while (isActive) {
             val live = runtimeSession.readDeviceKnob(view).round(2)
             deviceKnobDisplay = live
+            // 若 Rive 内部/手势改变值，实时对齐 current/target，避免旋钮基线偏差
+            if (kotlin.math.abs(live - currentKnobValue) > 0.005f) {
+                currentKnobValue = live
+                targetKnobValue = live
+            }
             delay(300L)
         }
     }
@@ -822,15 +818,22 @@ private fun RivePlayerUI(
                 val target = targetKnobValue
                 val diff = target - current
                 if (kotlin.math.abs(diff) < 0.005f) {
-                    delay(16L)
+                    delay(DEVICE_KNOB_SMOOTHING_INTERVAL_MS)
                     continue
                 }
-                val step = diff * 0.25f // 趋近系数，可调
-                val next = (current + step).coerceAtLeast(0f).round(3)
+                // 插值：先按比例限速，再用 ease-out 映射步长，避免大跨度抖动
+                val step = (diff * DEVICE_KNOB_SMOOTHING_FACTOR)
+                    .coerceIn(-DEVICE_KNOB_MAX_STEP_PER_TICK, DEVICE_KNOB_MAX_STEP_PER_TICK)
+                val t = (abs(step) / DEVICE_KNOB_MAX_STEP_PER_TICK).coerceIn(0f, 1f)
+                val easedStep = easeOutQuad(t) * DEVICE_KNOB_MAX_STEP_PER_TICK * if (step >= 0) 1f else -1f
+                val first = (current + easedStep * 0.4f).coerceAtLeast(0f)
+                val second = (first + easedStep * 0.6f).coerceAtLeast(0f)
+                val next = second.round(3)
                 currentKnobValue = next
                 deviceKnobDisplay = next.round(2)
+                runtimeSession.updateDeviceKnob(view, (first.round(3)))
                 runtimeSession.updateDeviceKnob(view, next)
-                delay(16L)
+                delay(DEVICE_KNOB_SMOOTHING_INTERVAL_MS)
             }
         }
     } else {
@@ -869,19 +872,16 @@ private fun RivePlayerUI(
                 factory = { context ->
                     try {
                         RiveAnimationView(context).apply {
+                            autoplay = true
                             riveViewRef = this
                             runtimeSession.attachView(this)
                             val riveFile = RiveCoreFile(riveData)
                             setRiveFile(riveFile)
-                            autoplay = true
                             addEventListener(eventListener)
                             runtimeSession.log("View created; autoplay=$autoplay mode=${bindingConfig.mode}")
-                            // 确保所有 state machine 启动，保证输入立即生效
                             controller?.stateMachines?.forEach { sm ->
-                                try {
-                                    play(sm.name)
-                                } catch (e: Exception) {
-                                    Log.w(TAG_BINDING, "Failed to start state machine ${sm.name}", e)
+                                runCatching { play(sm.name) }.onFailure {
+                                    Log.w(TAG_BINDING, "Failed to start state machine ${sm.name}", it)
                                 }
                             }
                             runtimeSession.bindViewModelIfNeeded(this)
@@ -904,6 +904,18 @@ private fun RivePlayerUI(
                     }
                 },
                 modifier = Modifier.fillMaxSize()
+            )
+            BasicText(
+                text = "deviceKnob: ${"%.2f".format(deviceKnobDisplay)}",
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                style = androidx.compose.ui.text.TextStyle(
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
             )
         }
     }
@@ -931,14 +943,9 @@ private fun RivePlayerUI(
     DisposableEffect(Unit) {
         onDispose {
             riveViewRef?.let { view ->
+                // 仅停止并移除监听，具体释放交由 session 统一处理，避免重复释放导致崩溃
                 view.removeEventListener(eventListener)
                 view.stop()
-                // 释放控制器资源，避免内存泄漏
-                try {
-                    view.controller?.release()
-                } catch (e: Exception) {
-                    Log.w("RivePlayerUI", "Error releasing controller on dispose", e)
-                }
             }
             riveViewRef = null
         }
@@ -950,6 +957,11 @@ private fun Float.round(decimals: Int): Float {
     var multiplier = 1.0f
     repeat(decimals) { multiplier *= 10 }
     return kotlin.math.round(this * multiplier) / multiplier
+}
+
+private fun easeOutQuad(t: Float): Float {
+    val clamped = t.coerceIn(0f, 1f)
+    return 1f - (1f - clamped) * (1f - clamped)
 }
 
 // 添加函数检查文件是否在外部存储中
@@ -1014,13 +1026,12 @@ private class RiveRuntimeSession(
         // 清理 ViewModel 实例引用
         viewModelInstance = null
         
-        // 释放 RiveAnimationView 资源
+        // 释放 RiveAnimationView 资源（集中释放，避免多处重复 release 引发 JNI 异常）
         riveView?.let { view ->
             try {
                 view.stop()
-                view.controller?.release()
             } catch (e: Exception) {
-                Log.w(TAG_BINDING_SESSION, "Error releasing Rive resources in session dispose", e)
+                Log.w(TAG_BINDING_SESSION, "Error stopping Rive view in session dispose", e)
             }
         }
         riveView = null
