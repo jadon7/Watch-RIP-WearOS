@@ -49,6 +49,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.compose.runtime.collectAsState
 import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
 import android.util.Log
 import app.rive.runtime.kotlin.controllers.RiveFileController
 import android.os.VibrationEffect
@@ -560,7 +563,8 @@ class RivePreviewActivity : ComponentActivity() {
                                 activityScope.launch {
                                     rotaryKnobDeltaFlow.emit(delta)
                                 }
-                            }
+                            },
+                            onKnobIntegerCross = { vibrateMinimal() }
                         )
                     }
                 }
@@ -670,6 +674,20 @@ class RivePreviewActivity : ComponentActivity() {
             powerTriggerFlow.emit(Unit)
         }
     }
+
+    private fun vibrateMinimal() {
+        try {
+            if (!::vibrator.isInitialized || !vibrator.hasVibrator()) return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(12L, 1))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(12L)
+            }
+        } catch (e: Exception) {
+            Log.w("RivePreviewActivity", "Failed to vibrate on knob step", e)
+        }
+    }
 }
 
 @Composable
@@ -683,7 +701,8 @@ private fun RivePlayerUI(
     rotaryKnobDeltaFlow: SharedFlow<Float>,
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener,
-    onRotaryKnobDelta: (Float) -> Unit
+    onRotaryKnobDelta: (Float) -> Unit,
+    onKnobIntegerCross: () -> Unit
 ) {
     // 用于接收旋钮旋转的焦点请求器
     val focusRequester = remember { FocusRequester() }
@@ -834,6 +853,10 @@ private fun RivePlayerUI(
                 val first = (current + easedStep * 0.4f).coerceAtLeast(0f)
                 val second = (first + easedStep * 0.6f).coerceAtLeast(0f)
                 val next = second.round(3)
+                val crossings = countIntegerCrossings(current, next)
+                if (crossings > 0) {
+                    repeat(crossings) { onKnobIntegerCross() }
+                }
                 currentKnobValue = next
                 deviceKnobDisplay = next.round(2)
                 runtimeSession.updateDeviceKnob(view, (first.round(3)))
@@ -971,6 +994,12 @@ private fun RivePlayerUI(
             knobActiveResetJob = null
         }
     }
+}
+
+private fun countIntegerCrossings(prev: Float, next: Float): Int {
+    val lower = floor(min(prev, next))
+    val upper = floor(max(prev, next))
+    return abs(upper.toInt() - lower.toInt())
 }
 
 // 扩展函数：对 Float 进行四舍五入并保留指定位数的小数
