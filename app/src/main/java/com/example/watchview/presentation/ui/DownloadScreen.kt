@@ -46,7 +46,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import app.rive.runtime.kotlin.core.File as RiveCoreFile
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -164,6 +163,8 @@ fun DownloadScreen(
                         val intent = Intent(context, RivePreviewActivity::class.java).apply {
                             putExtra("file_path", localFilePath)
                             putExtra("is_temp_file", false)
+                            // 确保只有一个 RivePreviewActivity 实例，新文件会替换旧文件
+                            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                         }
                         context.startActivity(intent)
                         downloadStatus = "" // 清除状态
@@ -464,7 +465,9 @@ fun DownloadScreen(
                             downloadStatus = ""
                             val intent = Intent(context, RivePreviewActivity::class.java).apply {
                                 putExtra("file_path", tempFile.absolutePath)
-                                putExtra("is_temp_file", true)  
+                                putExtra("is_temp_file", true)
+                                // 确保只有一个 RivePreviewActivity 实例，新文件会替换旧文件
+                                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                             }
                             context.startActivity(intent)
                         } else {
@@ -876,11 +879,16 @@ suspend fun checkLocalFile(
     }
 }
 
-// 检查文件是否为 Rive 文件
+// 检查文件是否为 Rive 文件 - 通过检查文件头魔数，避免创建完整的 Rive 对象导致内存泄漏
 private fun isRiveFile(file: File): Boolean {
     return try {
-        RiveCoreFile(file.readBytes())
-        true
+        java.io.FileInputStream(file).use { fis ->
+            val magic = ByteArray(4)
+            val read = fis.read(magic)
+            // Rive 文件的魔数是 "RIVE" (0x52 0x49 0x56 0x45)
+            read == 4 && magic[0] == 0x52.toByte() && magic[1] == 0x49.toByte() &&
+                    magic[2] == 0x56.toByte() && magic[3] == 0x45.toByte()
+        }
     } catch (e: Exception) {
         false
     }

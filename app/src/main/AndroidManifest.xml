@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission
+        android:name="android.permission.OVERRIDE_SYSTEM_KEY_BEHAVIOR_IN_FOCUSED_WINDOW"
+        tools:ignore="ProtectedPermissions" />
 
     <uses-feature android:name="android.hardware.type.watch" />
 
@@ -58,6 +61,7 @@
         <activity
             android:name=".presentation.RivePreviewActivity"
             android:exported="false"
+            android:launchMode="singleTask"
             android:theme="@style/NoSwipeTheme"
             android:enableOnBackInvokedCallback="true">
             <meta-data
@@ -70,9 +74,9 @@
             android:directBootAware="true"
             android:exported="false"
             tools:node="merge">
-            <meta-data
+            <!-- <meta-data
                 android:name="app.rive.runtime.kotlin.RiveInitializer"
-                android:value="androidx.startup" />
+                android:value="androidx.startup" /> -->
         </provider>
     </application>
 

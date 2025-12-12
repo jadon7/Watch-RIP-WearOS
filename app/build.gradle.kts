@@ -1,19 +1,19 @@
 plugins {
-    // 使用 version catalog 管理插件版本
-    alias(libs.plugins.android.application)  // Android 应用程序插件
-    alias(libs.plugins.kotlin.android)       // Kotlin Android 插件
+    // 使用显式插件 ID，便于 Upgrade Assistant 识别并升级版本
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 android {
     namespace = "com.example.watchview"      // 应用包名
-    compileSdk = 35                          // 编译用的 SDK 版本
+    compileSdk = 36                          // 编译用的 SDK 版本
 
     defaultConfig {
         applicationId = "com.example.watchview"  // 应用 ID
         minSdk = 30                             // 最低支持的 Android 版本 (WearOS)
         targetSdk = 34                          // 目标 Android 版本
         versionCode = 2                         // 应用版本号
-        versionName = "2.3.1"                     // 应用版本名称
+        versionName = "2.4.1"                     // 应用版本名称
         vectorDrawables {
             useSupportLibrary = true            // 启用矢量图支持
         }
@@ -40,7 +40,8 @@ android {
         compose = true                         // 启用 Jetpack Compose
     }
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.1"  // Compose 编译器版本
+        // 与 Kotlin 1.9.24 兼容的 Compose 编译扩展版本
+        kotlinCompilerExtensionVersion = "1.5.14"
     }
     packaging {
         resources {
@@ -79,6 +80,7 @@ dependencies {
     
     // 第三方库依赖
     implementation("com.google.accompanist:accompanist-pager:0.28.0")  // 分页组件
-    implementation("app.rive:rive-android:9.13.10")                    // Rive 动画支持
+    implementation("app.rive:rive-android:10.5.3")
     implementation("androidx.startup:startup-runtime:1.1.1")           // App Startup
+    implementation("com.getkeepsafe.relinker:relinker:1.4.5")          // Rive 需要的 ReLinker 库
 }

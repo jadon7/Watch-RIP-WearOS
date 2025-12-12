@@ -5,6 +5,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -96,12 +101,27 @@ fun VideoPlayer(file: java.io.File) {
 
 /**
  * Rive 动画播放器组件
+ * 注意：此组件已正确处理资源释放，避免内存泄漏
  */
 @Composable
 fun RivePlayer(file: java.io.File) {
+    var riveViewRef by remember { mutableStateOf<app.rive.runtime.kotlin.RiveAnimationView?>(null) }
+    
+    // 在组件销毁时释放资源
+    DisposableEffect(file.absolutePath) {
+        onDispose {
+            riveViewRef?.let { view ->
+                view.stop()
+                // 注意：RiveAnimationView 内部会管理 RiveFile 的生命周期
+            }
+            riveViewRef = null
+        }
+    }
+    
     androidx.compose.ui.viewinterop.AndroidView(
         factory = { context ->
             app.rive.runtime.kotlin.RiveAnimationView(context).apply {
+                riveViewRef = this
                 // 读取本地 Rive 文件并播放
                 val riveFile = app.rive.runtime.kotlin.core.File(file.readBytes())
                 setRiveFile(riveFile)
