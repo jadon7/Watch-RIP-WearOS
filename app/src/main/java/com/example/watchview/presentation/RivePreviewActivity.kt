@@ -92,7 +92,7 @@ private const val TAG_BINDING = "RiveBinding"
 private const val TAG_BINDING_SESSION = "RiveBindingSession"
 private const val TAG_BINDING_LISTENER = "RiveBindingListener"
 // 每度旋转映射到的 deviceKnob 增量（调节敏感度时调整此值）
-private const val KNOB_DELTA_PER_DEGREE = 0.05f
+private const val KNOB_DELTA_PER_DEGREE = 0.1f
 // 平滑参数：单帧趋近比例、最大单帧步长、平滑帧间隔
 private const val DEVICE_KNOB_SMOOTHING_FACTOR = 0.18f
 private const val DEVICE_KNOB_MAX_STEP_PER_TICK = 0.3f
@@ -102,6 +102,7 @@ private const val ENABLE_DEVICE_KNOB_LOOP = false
 private const val DEVICE_KNOB_LOOP_MAX = 13f
 private const val DEVICE_KNOB_LOOP_DURATION_MS = 4000L
 private const val DEVICE_KNOB_LOOP_INTERVAL_MS = 1000L
+private const val KNOB_ACTIVE_TIMEOUT_MS = 400L
 private const val STEM_KEY_FLAGS =
     WatchKeyController.FLAG_CONVERT_STEM_TO_FX or
     WatchKeyController.FLAG_CONVERT_STEM_TO_F1_ONLY
@@ -707,6 +708,10 @@ private fun RivePlayerUI(
         }
     }
 
+    // 控制 knobIsActive 延时归位
+    val knobActiveScope = rememberCoroutineScope()
+    var knobActiveResetJob by remember { mutableStateOf<Job?>(null) }
+
     DisposableEffect(runtimeSession) {
         onDispose { runtimeSession.dispose() }
     }
@@ -860,6 +865,19 @@ private fun RivePlayerUI(
                     if (!ENABLE_DEVICE_KNOB_LOOP) {
                         // 将旋转角度（系统提供的 scroll 像素）映射为按度数的增量
                         val delta = event.verticalScrollPixels * KNOB_DELTA_PER_DEGREE
+                        // 标记旋钮激活，并在一段时间无输入后自动复位为 false
+                        val view = riveViewRef
+                        if (view != null) {
+                            runtimeSession.setKnobActive(view, true)
+                            knobActiveResetJob?.cancel()
+                            knobActiveResetJob = knobActiveScope.launch {
+                                delay(KNOB_ACTIVE_TIMEOUT_MS)
+                                val stillView = riveViewRef
+                                if (stillView != null) {
+                                    runtimeSession.setKnobActive(stillView, false)
+                                }
+                            }
+                        }
                         onRotaryKnobDelta(delta)
                         Log.d("RotaryKnob", "Rotary scroll event: pixels=${event.verticalScrollPixels}, delta=$delta")
                     }
@@ -943,11 +961,14 @@ private fun RivePlayerUI(
     DisposableEffect(Unit) {
         onDispose {
             riveViewRef?.let { view ->
+                runtimeSession.setKnobActive(view, false)
                 // 仅停止并移除监听，具体释放交由 session 统一处理，避免重复释放导致崩溃
                 view.removeEventListener(eventListener)
                 view.stop()
             }
             riveViewRef = null
+            knobActiveResetJob?.cancel()
+            knobActiveResetJob = null
         }
     }
 }
@@ -1009,6 +1030,7 @@ private class RiveRuntimeSession(
     private var riveView: RiveAnimationView? = null
     private var lastSnapshot: RiveSnapshot? = null
     private var lastKnownDeviceKnob = 0f
+    private var lastKnobIsActive = false
     private val propertyObservers = mutableMapOf<String, MutableList<(Any?) -> Unit>>()
     val missingViewModelProperties = mutableSetOf<String>()
     var viewModelInstance: ViewModelInstance? = null
@@ -1040,6 +1062,7 @@ private class RiveRuntimeSession(
         propertyObservers.clear()
         missingViewModelProperties.clear()
         pendingTriggers.clear()
+        lastKnobIsActive = false
         
         Log.d(TAG_BINDING_SESSION, "[$filePath] Session disposed")
     }
@@ -1175,6 +1198,18 @@ private class RiveRuntimeSession(
         if (next == base) return base
         updateDeviceKnob(riveAnimationView, next)
         return next
+    }
+
+    fun setKnobActive(riveAnimationView: RiveAnimationView, active: Boolean) {
+        if (active == lastKnobIsActive) return
+        lastKnobIsActive = active
+        val viewModel = viewModelInstance
+        val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
+        if (hasViewModel && viewModel != null) {
+            viewModel.setBooleanProperty("knobIsActive", active, this)
+        } else {
+            markPropertyMissing("knobIsActive")
+        }
     }
 
     /**
