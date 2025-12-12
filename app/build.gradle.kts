@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.watchview"  // 应用 ID
         minSdk = 30                             // 最低支持的 Android 版本 (WearOS)
         targetSdk = 34                          // 目标 Android 版本
-        versionCode = 2                         // 应用版本号
-        versionName = "2.4.1"                     // 应用版本名称
+        versionCode = 3                         // 应用版本号
+        versionName = "3.0.1"                     // 应用版本名称
         vectorDrawables {
             useSupportLibrary = true            // 启用矢量图支持
         }

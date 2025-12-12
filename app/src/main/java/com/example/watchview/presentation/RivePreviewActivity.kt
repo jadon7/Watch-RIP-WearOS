@@ -583,12 +583,6 @@ class RivePreviewActivity : ComponentActivity() {
             riveView?.let { view ->
                 view.removeEventListener(eventListener)
                 view.stop()
-                // 释放 Rive 文件资源，避免内存泄漏
-                try {
-                    view.controller?.release()
-                } catch (e: Exception) {
-                    Log.w("RivePreviewActivity", "Error releasing controller", e)
-                }
             }
             riveView = null
         } catch (e: Exception) {
@@ -624,27 +618,14 @@ class RivePreviewActivity : ComponentActivity() {
         Log.d("RivePreviewActivity", "onNewIntent: 收到新文件请求 path=$newFilePath, isTempFile=$newIsTempFile")
         
         if (newFilePath != null && newFilePath != _currentFilePath.value) {
-            // 停止当前的 Rive 动画并释放资源
-            riveView?.let { view ->
-                view.removeEventListener(eventListener)
-                view.stop()
-                // 释放控制器资源，避免内存泄漏
-                try {
-                    view.controller?.release()
-                } catch (e: Exception) {
-                    Log.w("RivePreviewActivity", "Error releasing controller on file switch", e)
-                }
-            }
-            riveView = null
-            
             // 重置错误计数
             errorCount = 0
-            
-            // 更新文件路径，触发 UI 重新加载
+
+            // 更新文件路径，触发 UI 重新加载（让新的加载流程与首次打开一致）
             _currentFilePath.value = newFilePath
             _currentIsTempFile.value = newIsTempFile
             _currentBindingConfig.value = newBindingConfig
-            
+
             Log.d("RivePreviewActivity", "onNewIntent: 已更新文件路径，触发重新加载")
         }
     }
@@ -891,19 +872,16 @@ private fun RivePlayerUI(
                 factory = { context ->
                     try {
                         RiveAnimationView(context).apply {
+                            autoplay = true
                             riveViewRef = this
                             runtimeSession.attachView(this)
                             val riveFile = RiveCoreFile(riveData)
                             setRiveFile(riveFile)
-                            autoplay = true
                             addEventListener(eventListener)
                             runtimeSession.log("View created; autoplay=$autoplay mode=${bindingConfig.mode}")
-                            // 确保所有 state machine 启动，保证输入立即生效
                             controller?.stateMachines?.forEach { sm ->
-                                try {
-                                    play(sm.name)
-                                } catch (e: Exception) {
-                                    Log.w(TAG_BINDING, "Failed to start state machine ${sm.name}", e)
+                                runCatching { play(sm.name) }.onFailure {
+                                    Log.w(TAG_BINDING, "Failed to start state machine ${sm.name}", it)
                                 }
                             }
                             runtimeSession.bindViewModelIfNeeded(this)
@@ -965,14 +943,9 @@ private fun RivePlayerUI(
     DisposableEffect(Unit) {
         onDispose {
             riveViewRef?.let { view ->
+                // 仅停止并移除监听，具体释放交由 session 统一处理，避免重复释放导致崩溃
                 view.removeEventListener(eventListener)
                 view.stop()
-                // 释放控制器资源，避免内存泄漏
-                try {
-                    view.controller?.release()
-                } catch (e: Exception) {
-                    Log.w("RivePlayerUI", "Error releasing controller on dispose", e)
-                }
             }
             riveViewRef = null
         }
@@ -1053,13 +1026,12 @@ private class RiveRuntimeSession(
         // 清理 ViewModel 实例引用
         viewModelInstance = null
         
-        // 释放 RiveAnimationView 资源
+        // 释放 RiveAnimationView 资源（集中释放，避免多处重复 release 引发 JNI 异常）
         riveView?.let { view ->
             try {
                 view.stop()
-                view.controller?.release()
             } catch (e: Exception) {
-                Log.w(TAG_BINDING_SESSION, "Error releasing Rive resources in session dispose", e)
+                Log.w(TAG_BINDING_SESSION, "Error stopping Rive view in session dispose", e)
             }
         }
         riveView = null
