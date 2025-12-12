@@ -105,7 +105,8 @@ private const val ENABLE_DEVICE_KNOB_LOOP = false
 private const val DEVICE_KNOB_LOOP_MAX = 13f
 private const val DEVICE_KNOB_LOOP_DURATION_MS = 4000L
 private const val DEVICE_KNOB_LOOP_INTERVAL_MS = 1000L
-private const val KNOB_ACTIVE_TIMEOUT_MS = 400L
+private const val KNOB_ACTIVE_TIMEOUT_MS = 0L
+private const val HAPTIC_SCROLL_TICK = 18
 private const val STEM_KEY_FLAGS =
     WatchKeyController.FLAG_CONVERT_STEM_TO_FX or
     WatchKeyController.FLAG_CONVERT_STEM_TO_F1_ONLY
@@ -676,13 +677,32 @@ class RivePreviewActivity : ComponentActivity() {
     }
 
     private fun vibrateMinimal() {
+        // 先尝试系统滚动轻触反馈（最接近“最小幅度”）
+        val decorView = window?.decorView
+        if (decorView != null) {
+            runCatching {
+                if (decorView.performHapticFeedback(HAPTIC_SCROLL_TICK)) {
+                    return
+                }
+            }
+        }
+
         try {
             if (!::vibrator.isInitialized || !vibrator.hasVibrator()) return
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(VibrationEffect.createOneShot(12L, 1))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // 优先使用系统预置的轻触效果；210 为轻量滚动反馈的预置编号
+                val effectId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    VibrationEffect.EFFECT_TICK
+                } else {
+                    210
+                }
+                val effect = VibrationEffect.createPredefined(effectId)
+                vibrator.vibrate(effect)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(10L, 30))
             } else {
                 @Suppress("DEPRECATION")
-                vibrator.vibrate(12L)
+                vibrator.vibrate(10L)
             }
         } catch (e: Exception) {
             Log.w("RivePreviewActivity", "Failed to vibrate on knob step", e)
