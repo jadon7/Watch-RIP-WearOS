@@ -946,18 +946,6 @@ private fun RivePlayerUI(
                 },
                 modifier = Modifier.fillMaxSize()
             )
-            BasicText(
-                text = "deviceKnob: ${"%.2f".format(deviceKnobDisplay)}",
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                style = androidx.compose.ui.text.TextStyle(
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    textAlign = TextAlign.Center
-                )
-            )
         }
     }
 
