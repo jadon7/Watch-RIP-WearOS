@@ -705,6 +705,7 @@ private fun RivePlayerUI(
 
     // 当前旋钮值，精度为小数点后两位
     var currentKnobValue by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
+    var targetKnobValue by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
     var deviceKnobDisplay by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
     // 使用 remember 保持引用，但不作为 Compose 状态，避免触发 recomposition
     var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
@@ -779,10 +780,9 @@ private fun RivePlayerUI(
         LaunchedEffect(rotaryKnobDeltaFlow, riveViewRef, runtimeSession) {
             rotaryKnobDeltaFlow.collect { delta ->
                 val view = riveViewRef ?: return@collect
-                val next = runtimeSession.adjustDeviceKnob(view, delta)
-                currentKnobValue = next
-                deviceKnobDisplay = runtimeSession.readDeviceKnob(view).round(2)
-                Log.d("RotaryKnob", "deviceKnob updated: $next (delta: $delta)")
+                val nextTarget = (targetKnobValue + delta).coerceAtLeast(0f)
+                targetKnobValue = nextTarget
+                Log.d("RotaryKnob", "deviceKnob target updated: $nextTarget (delta: $delta)")
             }
         }
     }
@@ -803,7 +803,7 @@ private fun RivePlayerUI(
         focusRequester.requestFocus()
     }
 
-    // 定期从 Rive Databinding 读取当前值，确保显示为真实值而不是本地缓存
+    // 定期从 Rive Databinding 读取当前值用于显示，避免本地与 Rive 内部脱节
     LaunchedEffect(riveViewRef, runtimeSession) {
         val view = riveViewRef ?: return@LaunchedEffect
         while (isActive) {
@@ -813,14 +813,35 @@ private fun RivePlayerUI(
         }
     }
 
-    // 循环驱动 deviceKnob：2s 内从 0 到 13 循环，替代旋钮控制
-    if (ENABLE_DEVICE_KNOB_LOOP) {
+    // 平滑逼近目标值，降低单帧跳变感
+    if (!ENABLE_DEVICE_KNOB_LOOP) {
+        LaunchedEffect(riveViewRef, runtimeSession) {
+            val view = riveViewRef ?: return@LaunchedEffect
+            while (isActive) {
+                val current = currentKnobValue
+                val target = targetKnobValue
+                val diff = target - current
+                if (kotlin.math.abs(diff) < 0.005f) {
+                    delay(16L)
+                    continue
+                }
+                val step = diff * 0.25f // 趋近系数，可调
+                val next = (current + step).coerceAtLeast(0f).round(3)
+                currentKnobValue = next
+                deviceKnobDisplay = next.round(2)
+                runtimeSession.updateDeviceKnob(view, next)
+                delay(16L)
+            }
+        }
+    } else {
+        // 循环驱动 deviceKnob：周期内从 0 到 13 循环
         LaunchedEffect(riveViewRef, runtimeSession) {
             val view = riveViewRef ?: return@LaunchedEffect
             while (isActive) {
                 val phase = (SystemClock.uptimeMillis() % DEVICE_KNOB_LOOP_DURATION_MS).toFloat() / DEVICE_KNOB_LOOP_DURATION_MS
                 val value = (phase * DEVICE_KNOB_LOOP_MAX).round(2)
                 currentKnobValue = value
+                targetKnobValue = value
                 deviceKnobDisplay = value
                 runtimeSession.updateDeviceKnob(view, value)
                 delay(DEVICE_KNOB_LOOP_INTERVAL_MS)
@@ -883,14 +904,6 @@ private fun RivePlayerUI(
                     }
                 },
                 modifier = Modifier.fillMaxSize()
-            )
-            BasicText(
-                text = "deviceKnob: ${"%.2f".format(deviceKnobDisplay)}",
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                style = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp, textAlign = TextAlign.Center)
             )
         }
     }
