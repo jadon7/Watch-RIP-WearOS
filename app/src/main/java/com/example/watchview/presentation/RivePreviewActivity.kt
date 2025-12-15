@@ -106,7 +106,7 @@ private const val DEVICE_KNOB_LOOP_MAX = 13f
 private const val DEVICE_KNOB_LOOP_DURATION_MS = 4000L
 private const val DEVICE_KNOB_LOOP_INTERVAL_MS = 1000L
 private const val KNOB_ACTIVE_TIMEOUT_MS = 0L
-private const val HAPTIC_SCROLL_TICK = 18
+private const val HAPTIC_SCROLL_TICK = 10
 private const val STEM_KEY_FLAGS =
     WatchKeyController.FLAG_CONVERT_STEM_TO_FX or
     WatchKeyController.FLAG_CONVERT_STEM_TO_F1_ONLY
