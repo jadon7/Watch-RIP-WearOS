@@ -125,11 +125,21 @@ class RivePreviewActivity : ComponentActivity() {
     private val crownTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val powerTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val replayTriggerFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val crownPressStateFlow = MutableSharedFlow<Boolean>(extraBufferCapacity = 4)
+    private val powerPressStateFlow = MutableSharedFlow<Boolean>(extraBufferCapacity = 4)
     
     // 旋钮值增量流，用于旋钮旋转时传递增量
     private val rotaryKnobDeltaFlow = MutableSharedFlow<Float>(extraBufferCapacity = 64)
-    private val stemKeyDispatcher = StemKeyDispatcher { emitCrownTrigger() }
-    private val powerKeyDispatcher = PowerKeyDispatcher { emitPowerTrigger() }
+    private val stemKeyDispatcher = StemKeyDispatcher(
+        onTrigger = { emitCrownTrigger() },
+        onDown = { emitKnobDownState(true) },
+        onUp = { emitKnobDownState(false) }
+    )
+    private val powerKeyDispatcher = PowerKeyDispatcher(
+        onTrigger = { emitPowerTrigger() },
+        onDown = { emitPowerDownState(true) },
+        onUp = { emitPowerDownState(false) }
+    )
     
     // 用于跟踪当前文件路径，支持动态更新
     private val _currentFilePath = MutableStateFlow<String?>("")
@@ -557,6 +567,8 @@ class RivePreviewActivity : ComponentActivity() {
                             crownTriggerFlow = crownTriggerFlow,
                             powerTriggerFlow = powerTriggerFlow,
                             replayTriggerFlow = replayTriggerFlow,
+                            crownPressStateFlow = crownPressStateFlow,
+                            powerPressStateFlow = powerPressStateFlow,
                             rotaryKnobDeltaFlow = rotaryKnobDeltaFlow,
                             onRiveViewCreated = { view -> riveView = view },
                             eventListener = eventListener,
@@ -677,6 +689,18 @@ class RivePreviewActivity : ComponentActivity() {
         }
     }
 
+    private fun emitKnobDownState(isDown: Boolean) {
+        activityScope.launch {
+            crownPressStateFlow.emit(isDown)
+        }
+    }
+
+    private fun emitPowerDownState(isDown: Boolean) {
+        activityScope.launch {
+            powerPressStateFlow.emit(isDown)
+        }
+    }
+
     private fun vibrateMinimal() {
         // 先尝试系统滚动轻触反馈（最接近“最小幅度”）
         val decorView = window?.decorView
@@ -719,6 +743,8 @@ private fun RivePlayerUI(
     crownTriggerFlow: SharedFlow<Unit>,
     powerTriggerFlow: SharedFlow<Unit>,
     replayTriggerFlow: SharedFlow<Unit>,
+    crownPressStateFlow: SharedFlow<Boolean>,
+    powerPressStateFlow: SharedFlow<Boolean>,
     rotaryKnobDeltaFlow: SharedFlow<Float>,
     onRiveViewCreated: (RiveAnimationView) -> Unit,
     eventListener: RiveFileController.RiveEventListener,
@@ -984,6 +1010,18 @@ private fun RivePlayerUI(
         }
     }
 
+    LaunchedEffect(crownPressStateFlow, runtimeSession) {
+        crownPressStateFlow.collect { isDown ->
+            runtimeSession.setKnobDownState(isDown)
+        }
+    }
+
+    LaunchedEffect(powerPressStateFlow, runtimeSession) {
+        powerPressStateFlow.collect { isDown ->
+            runtimeSession.setPowerDownState(isDown)
+        }
+    }
+
     LaunchedEffect(replayTriggerFlow) {
         replayTriggerFlow.collect {
             reloadToken++
@@ -1193,17 +1231,26 @@ private class RiveRuntimeSession(
 
     private fun applyBooleanToViewModels(
         propertyName: String,
-        value: Boolean
+        value: Boolean,
+        touchStateMachines: Boolean = true
     ) {
-        if (config.mode == RiveBindingMode.STATE_MACHINE_ONLY) return
-        val tree = viewModelTree
-        if (tree != null) {
-            tree.forEachNode { node ->
-                runCatching { node.instance.setBooleanProperty(propertyName, value, this) }
-                    .onFailure { markPropertyMissing(propertyName, it) }
+        if (config.mode != RiveBindingMode.STATE_MACHINE_ONLY) {
+            val tree = viewModelTree
+            if (tree != null) {
+                tree.forEachNode { node ->
+                    runCatching { node.instance.setBooleanProperty(propertyName, value, this) }
+                        .onFailure { markPropertyMissing(propertyName, it) }
+                }
+            } else {
+                viewModelInstance?.setBooleanProperty(propertyName, value, this)
             }
-        } else {
-            viewModelInstance?.setBooleanProperty(propertyName, value, this)
+        }
+
+        if (touchStateMachines && config.mode != RiveBindingMode.VIEWMODEL_ONLY) {
+            val view = riveView
+            if (view != null) {
+                view.pushBooleanInputAcrossStateMachines(propertyName, value, this)
+            }
         }
     }
 
@@ -1221,6 +1268,14 @@ private class RiveRuntimeSession(
         }
         val viewModel = viewModelInstance ?: return false
         return viewModel.triggerProperty(triggerName, this)
+    }
+
+    fun setKnobDownState(isDown: Boolean) {
+        applyBooleanToViewModels("isKnobDown", isDown)
+    }
+
+    fun setPowerDownState(isDown: Boolean) {
+        applyBooleanToViewModels("isPowerDown", isDown)
     }
 
     fun bindViewModelIfNeeded(riveAnimationView: RiveAnimationView) {
@@ -1355,7 +1410,7 @@ private class RiveRuntimeSession(
     fun setKnobActive(riveAnimationView: RiveAnimationView, active: Boolean) {
         if (active == lastKnobIsActive) return
         lastKnobIsActive = active
-        applyBooleanToViewModels("knobIsActive", active)
+        applyBooleanToViewModels("knobIsActive", active, touchStateMachines = true)
     }
 
     /**
@@ -1504,6 +1559,38 @@ private fun RiveAnimationView.pushTriggerAcrossStateMachines(
     }
 }
 
+private fun RiveAnimationView.pushBooleanInputAcrossStateMachines(
+    inputName: String,
+    value: Boolean,
+    session: RiveRuntimeSession
+) {
+    val artboard = controller?.activeArtboard ?: file?.firstArtboard ?: return
+    val playing = playingStateMachines
+    val targetMachines = if (playing.isNotEmpty()) {
+        playing.map { it.name }
+    } else {
+        artboard.stateMachineNames ?: emptyList()
+    }
+    var applied = false
+    targetMachines.forEach { machineName ->
+        val stateMachine = artboard.stateMachine(machineName)
+        val hasInput = stateMachine?.inputs?.any { it.name == inputName } == true
+        if (hasInput) {
+            try {
+                setBooleanState(machineName, inputName, value)
+                session.logWrite("stateMachine", inputName, value, "machine=$machineName")
+                session.notifyObservers(inputName, value)
+                applied = true
+            } catch (e: Exception) {
+                Log.e(TAG_BINDING, "Failed to set $inputName on $machineName", e)
+            }
+        }
+    }
+    if (!applied) {
+        Log.d(TAG_BINDING, "No state machine exposes boolean input: $inputName")
+    }
+}
+
 private fun ViewModelInstance.setNumberProperty(
     propertyName: String,
     value: Float,
@@ -1589,38 +1676,46 @@ private fun ViewModelInstance.triggerProperty(
 }
 
 private class StemKeyDispatcher(
-    private val onTrigger: () -> Unit
+    private val onTrigger: () -> Unit,
+    private val onDown: (() -> Unit)? = null,
+    private val onUp: (() -> Unit)? = null
 ) {
     private var lastDownTimestamp = 0L
 
     fun onKeyDown(event: KeyEvent): Boolean {
         lastDownTimestamp = event.eventTime
         Log.i(TAG_BINDING, "Stem key down intercepted")
+        onDown?.invoke()
         return true
     }
 
     fun onKeyUp(event: KeyEvent): Boolean {
         val pressDuration = event.eventTime - lastDownTimestamp
         Log.i(TAG_BINDING, "Stem key up after ${pressDuration}ms")
+        onUp?.invoke()
         onTrigger()
         return true
     }
 }
 
 private class PowerKeyDispatcher(
-    private val onTrigger: () -> Unit
+    private val onTrigger: () -> Unit,
+    private val onDown: (() -> Unit)? = null,
+    private val onUp: (() -> Unit)? = null
 ) {
     private var lastDownTimestamp = 0L
 
     fun onKeyDown(event: KeyEvent): Boolean {
         lastDownTimestamp = event.eventTime
         Log.i(TAG_BINDING, "Power key down intercepted")
+        onDown?.invoke()
         return true
     }
 
     fun onKeyUp(event: KeyEvent): Boolean {
         val pressDuration = event.eventTime - lastDownTimestamp
         Log.i(TAG_BINDING, "Power key up after ${pressDuration}ms")
+        onUp?.invoke()
         onTrigger()
         return true
     }
