@@ -34,6 +34,7 @@ import kotlinx.coroutines.*
 import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
 import app.rive.runtime.kotlin.core.File as RiveCoreFile
+import app.rive.runtime.kotlin.core.ViewModel
 import app.rive.runtime.kotlin.core.ViewModelInstance
 import app.rive.runtime.kotlin.core.errors.ViewModelException
 import java.util.*
@@ -1060,6 +1061,13 @@ private fun String?.toRiveBindingMode(): RiveBindingMode? {
     return RiveBindingMode.values().firstOrNull { it.wireValue.equals(this, ignoreCase = true) }
 }
 
+private data class ViewModelNode(
+    val instance: ViewModelInstance,
+    val definition: ViewModel?,
+    val properties: Map<String, ViewModel.PropertyDataType>,
+    val children: List<ViewModelNode> = emptyList()
+)
+
 private class RiveRuntimeSession(
     private val filePath: String,
     val config: RiveBindingConfig
@@ -1068,6 +1076,7 @@ private class RiveRuntimeSession(
     private var lastSnapshot: RiveSnapshot? = null
     private var lastKnownDeviceKnob = 0f
     private var lastKnobIsActive = false
+    private var viewModelTree: ViewModelNode? = null
     private val propertyObservers = mutableMapOf<String, MutableList<(Any?) -> Unit>>()
     val missingViewModelProperties = mutableSetOf<String>()
     var viewModelInstance: ViewModelInstance? = null
@@ -1100,6 +1109,7 @@ private class RiveRuntimeSession(
         missingViewModelProperties.clear()
         pendingTriggers.clear()
         lastKnobIsActive = false
+        viewModelTree = null
         
         Log.d(TAG_BINDING_SESSION, "[$filePath] Session disposed")
     }
@@ -1120,6 +1130,99 @@ private class RiveRuntimeSession(
         Log.i(TAG_BINDING_SESSION, "[$filePath] $message")
     }
 
+    private fun buildViewModelTree(
+        file: RiveCoreFile,
+        instance: ViewModelInstance,
+        definition: ViewModel?,
+        depth: Int = 0
+    ): ViewModelNode? {
+        return runCatching {
+            val props = definition?.properties?.associate { it.name to it.type } ?: emptyMap()
+            val children = props
+                .filterValues { it == ViewModel.PropertyDataType.VIEW_MODEL }
+                .mapNotNull { (name, _) ->
+                    runCatching { instance.getInstanceProperty(name) }
+                        .onFailure {
+                            Log.w(TAG_BINDING_SESSION, "[$filePath] Failed to get nested ViewModel instance for $name at depth=$depth", it)
+                        }
+                        .getOrNull()
+                        ?.let { childInstance ->
+                            val childDefinition = runCatching {
+                                file.getViewModelByName(childInstance.name)
+                            }.onFailure {
+                                Log.w(TAG_BINDING_SESSION, "[$filePath] Nested ViewModel definition not found: ${childInstance.name}", it)
+                            }.getOrNull()
+                            buildViewModelTree(file, childInstance, childDefinition, depth + 1)
+                        }
+                }
+            ViewModelNode(instance, definition, props, children)
+        }.onFailure {
+            Log.w(TAG_BINDING_SESSION, "[$filePath] Failed to build ViewModel tree", it)
+        }.getOrNull()
+    }
+
+    private fun ViewModelNode.forEachNode(block: (ViewModelNode) -> Unit) {
+        block(this)
+        children.forEach { it.forEachNode(block) }
+    }
+
+    private fun applyNumberToViewModels(
+        propertyName: String,
+        value: Float,
+        old: Float? = null,
+        riveAnimationView: RiveAnimationView? = null,
+        touchStateMachines: Boolean = true
+    ) {
+        if (old != null && abs(value - old) < 0.0001f) return
+        val allowViewModel = config.mode != RiveBindingMode.STATE_MACHINE_ONLY
+        if (allowViewModel) {
+            val tree = viewModelTree
+            if (tree != null) {
+                tree.forEachNode { node ->
+                    runCatching { node.instance.setNumberProperty(propertyName, value, this) }
+                        .onFailure { markPropertyMissing(propertyName, it) }
+                }
+            } else {
+                viewModelInstance?.setNumberProperty(propertyName, value, this)
+            }
+        }
+        if (touchStateMachines && config.mode != RiveBindingMode.VIEWMODEL_ONLY && riveAnimationView != null) {
+            riveAnimationView.pushNumberInputAcrossStateMachines(propertyName, value, this)
+        }
+    }
+
+    private fun applyBooleanToViewModels(
+        propertyName: String,
+        value: Boolean
+    ) {
+        if (config.mode == RiveBindingMode.STATE_MACHINE_ONLY) return
+        val tree = viewModelTree
+        if (tree != null) {
+            tree.forEachNode { node ->
+                runCatching { node.instance.setBooleanProperty(propertyName, value, this) }
+                    .onFailure { markPropertyMissing(propertyName, it) }
+            }
+        } else {
+            viewModelInstance?.setBooleanProperty(propertyName, value, this)
+        }
+    }
+
+    private fun fireViewModelTrigger(triggerName: String): Boolean {
+        if (config.mode == RiveBindingMode.STATE_MACHINE_ONLY) return false
+        var handled = false
+        val tree = viewModelTree
+        if (tree != null) {
+            tree.forEachNode { node ->
+                if (node.instance.triggerProperty(triggerName, this)) {
+                    handled = true
+                }
+            }
+            return handled
+        }
+        val viewModel = viewModelInstance ?: return false
+        return viewModel.triggerProperty(triggerName, this)
+    }
+
     fun bindViewModelIfNeeded(riveAnimationView: RiveAnimationView) {
         if (config.mode == RiveBindingMode.STATE_MACHINE_ONLY) {
             log("ViewModel binding skipped due to mode=${config.mode}")
@@ -1138,7 +1241,7 @@ private class RiveRuntimeSession(
                 log("Artboard not available, will use state machine fallback")
                 return
             }
-            
+
             val file = riveAnimationView.file
             if (file == null) {
                 log("Rive file not available, will use state machine fallback")
@@ -1149,6 +1252,10 @@ private class RiveRuntimeSession(
             val existing = controller.stateMachines.firstOrNull { it.viewModelInstance != null }?.viewModelInstance
             if (existing != null && config.viewModelName.isNullOrBlank() && config.instanceName.isNullOrBlank()) {
                 viewModelInstance = existing
+                viewModelTree = runCatching {
+                    val definition = file.getViewModelByName(existing.name)
+                    if (definition != null) buildViewModelTree(file, existing, definition) else null
+                }.getOrNull()
                 log("Reusing existing ViewModel instance ${existing.name}")
                 dispatchPendingTriggers()
                 return
@@ -1193,12 +1300,14 @@ private class RiveRuntimeSession(
             controller.stateMachines.forEach { it.viewModelInstance = instance }
             artboard.viewModelInstance = instance
             viewModelInstance = instance
+            viewModelTree = buildViewModelTree(file, instance, viewModel)
             log("Bound ViewModel=${viewModel.name} instance=${instance.name ?: "default"}")
             dispatchPendingTriggers()
         } catch (e: Exception) {
             // 捕获所有异常，确保即使 ViewModel 绑定失败，动画也能播放
             Log.w(TAG_BINDING_SESSION, "[$filePath] ViewModel binding failed, will use state machine fallback", e)
             viewModelInstance = null
+            viewModelTree = null
         }
     }
 
@@ -1207,34 +1316,13 @@ private class RiveRuntimeSession(
         if (snapshot == previous) return
         lastSnapshot = snapshot
 
-        // deviceKnob 仅在旋钮事件时写入，避免非用户操作的周期性写入
-        fun writeNumber(name: String, value: Float, old: Float?) {
-            // 跳过无变化的字段，减少不必要写入
-            if (old != null && abs(value - old) < 0.0001f) return
-
-            val viewModel = viewModelInstance
-            val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
-            val allowStateMachine = config.mode != RiveBindingMode.VIEWMODEL_ONLY
-
-            if (hasViewModel && viewModel != null) {
-                viewModel.setNumberProperty(name, value, this)
-            } else if (!allowStateMachine) {
-                // 仅 ViewModel 模式且缺少属性时标记一次
-                markPropertyMissing(name)
-            }
-
-            if (allowStateMachine) {
-                riveAnimationView.pushNumberInputAcrossStateMachines(name, value, this)
-            }
-        }
-
-        writeNumber("hour", snapshot.hour, previous?.hour)
-        writeNumber("minute", snapshot.minute, previous?.minute)
-        writeNumber("second", snapshot.second, previous?.second)
-        writeNumber("battery", snapshot.battery, previous?.battery)
-        writeNumber("month", snapshot.month, previous?.month)
-        writeNumber("day", snapshot.day, previous?.day)
-        writeNumber("week", snapshot.week, previous?.week)
+        applyNumberToViewModels("hour", snapshot.hour, previous?.hour, riveAnimationView)
+        applyNumberToViewModels("minute", snapshot.minute, previous?.minute, riveAnimationView)
+        applyNumberToViewModels("second", snapshot.second, previous?.second, riveAnimationView)
+        applyNumberToViewModels("battery", snapshot.battery, previous?.battery, riveAnimationView)
+        applyNumberToViewModels("month", snapshot.month, previous?.month, riveAnimationView)
+        applyNumberToViewModels("day", snapshot.day, previous?.day, riveAnimationView)
+        applyNumberToViewModels("week", snapshot.week, previous?.week, riveAnimationView)
     }
 
     fun readDeviceKnob(riveAnimationView: RiveAnimationView): Float {
@@ -1267,13 +1355,7 @@ private class RiveRuntimeSession(
     fun setKnobActive(riveAnimationView: RiveAnimationView, active: Boolean) {
         if (active == lastKnobIsActive) return
         lastKnobIsActive = active
-        val viewModel = viewModelInstance
-        val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
-        if (hasViewModel && viewModel != null) {
-            viewModel.setBooleanProperty("knobIsActive", active, this)
-        } else {
-            markPropertyMissing("knobIsActive")
-        }
+        applyBooleanToViewModels("knobIsActive", active)
     }
 
     /**
@@ -1283,20 +1365,8 @@ private class RiveRuntimeSession(
      * @param value 当前的旋钮值（已累加增量后的值）
      */
     fun updateDeviceKnob(riveAnimationView: RiveAnimationView, value: Float) {
-        val viewModel = viewModelInstance
-        val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
         lastKnownDeviceKnob = value.coerceAtLeast(0f)
-        
-        if (hasViewModel && viewModel != null) {
-            viewModel.setNumberProperty("deviceKnob", lastKnownDeviceKnob, this)
-        }
-        
-        // Hybrid 模式下也尝试更新 state machine
-        // 如果只要 ViewModel 写入，则跳过状态机
-        val shouldTouchStateMachines = config.mode != RiveBindingMode.VIEWMODEL_ONLY
-        if (shouldTouchStateMachines && config.mode == RiveBindingMode.STATE_MACHINE_ONLY) {
-            riveAnimationView.pushNumberInputAcrossStateMachines("deviceKnob", value, this)
-        }
+        applyNumberToViewModels("deviceKnob", lastKnownDeviceKnob, riveAnimationView = riveAnimationView)
     }
 
     fun markPropertyAvailable(propertyName: String) {
@@ -1358,8 +1428,7 @@ private class RiveRuntimeSession(
     }
 
     private fun dispatchTriggerToViewModel(triggerName: String): Boolean {
-        val viewModel = viewModelInstance ?: return false
-        return viewModel.triggerProperty(triggerName, this)
+        return fireViewModelTrigger(triggerName)
     }
 
     private fun dispatchPendingTriggers() {
