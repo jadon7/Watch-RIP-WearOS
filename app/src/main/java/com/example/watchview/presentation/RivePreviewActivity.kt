@@ -1204,11 +1204,6 @@ private class RiveRuntimeSession(
         children.forEach { it.forEachNode(block) }
     }
 
-    private fun ViewModelNode.hasProperty(
-        name: String,
-        allowedTypes: Set<ViewModel.PropertyDataType>
-    ): Boolean = properties[name]?.let { it in allowedTypes } == true
-
     private fun applyNumberToViewModels(
         propertyName: String,
         value: Float,
@@ -1222,10 +1217,8 @@ private class RiveRuntimeSession(
             val tree = viewModelTree
             if (tree != null) {
                 tree.forEachNode { node ->
-                    if (node.hasProperty(propertyName, setOf(ViewModel.PropertyDataType.NUMBER, ViewModel.PropertyDataType.INTEGER))) {
-                        runCatching { node.instance.setNumberProperty(propertyName, value, this) }
-                            .onFailure { markPropertyMissing(propertyName, it) }
-                    }
+                    runCatching { node.instance.setNumberProperty(propertyName, value, this) }
+                        .onFailure { markPropertyMissing(propertyName, it) }
                 }
             } else {
                 viewModelInstance?.setNumberProperty(propertyName, value, this)
@@ -1245,10 +1238,8 @@ private class RiveRuntimeSession(
             val tree = viewModelTree
             if (tree != null) {
                 tree.forEachNode { node ->
-                    if (node.hasProperty(propertyName, setOf(ViewModel.PropertyDataType.BOOLEAN))) {
-                        runCatching { node.instance.setBooleanProperty(propertyName, value, this) }
-                            .onFailure { markPropertyMissing(propertyName, it) }
-                    }
+                    runCatching { node.instance.setBooleanProperty(propertyName, value, this) }
+                        .onFailure { markPropertyMissing(propertyName, it) }
                 }
             } else {
                 viewModelInstance?.setBooleanProperty(propertyName, value, this)
@@ -1269,10 +1260,8 @@ private class RiveRuntimeSession(
         val tree = viewModelTree
         if (tree != null) {
             tree.forEachNode { node ->
-                if (node.hasProperty(triggerName, setOf(ViewModel.PropertyDataType.TRIGGER))) {
-                    if (node.instance.triggerProperty(triggerName, this)) {
-                        handled = true
-                    }
+                if (node.instance.triggerProperty(triggerName, this)) {
+                    handled = true
                 }
             }
             return handled
