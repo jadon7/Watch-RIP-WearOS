@@ -106,7 +106,7 @@ private const val DEVICE_KNOB_LOOP_MAX = 13f
 private const val DEVICE_KNOB_LOOP_DURATION_MS = 4000L
 private const val DEVICE_KNOB_LOOP_INTERVAL_MS = 1000L
 private const val KNOB_ACTIVE_TIMEOUT_MS = 0L
-private const val HAPTIC_SCROLL_TICK = 18
+private const val HAPTIC_SCROLL_TICK = 10
 private const val STEM_KEY_FLAGS =
     WatchKeyController.FLAG_CONVERT_STEM_TO_FX or
     WatchKeyController.FLAG_CONVERT_STEM_TO_F1_ONLY
@@ -1208,6 +1208,33 @@ private class RiveRuntimeSession(
         lastSnapshot = snapshot
 
         // deviceKnob 仅在旋钮事件时写入，避免非用户操作的周期性写入
+        fun writeNumber(name: String, value: Float, old: Float?) {
+            // 跳过无变化的字段，减少不必要写入
+            if (old != null && abs(value - old) < 0.0001f) return
+
+            val viewModel = viewModelInstance
+            val hasViewModel = viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY
+            val allowStateMachine = config.mode != RiveBindingMode.VIEWMODEL_ONLY
+
+            if (hasViewModel && viewModel != null) {
+                viewModel.setNumberProperty(name, value, this)
+            } else if (!allowStateMachine) {
+                // 仅 ViewModel 模式且缺少属性时标记一次
+                markPropertyMissing(name)
+            }
+
+            if (allowStateMachine) {
+                riveAnimationView.pushNumberInputAcrossStateMachines(name, value, this)
+            }
+        }
+
+        writeNumber("hour", snapshot.hour, previous?.hour)
+        writeNumber("minute", snapshot.minute, previous?.minute)
+        writeNumber("second", snapshot.second, previous?.second)
+        writeNumber("battery", snapshot.battery, previous?.battery)
+        writeNumber("month", snapshot.month, previous?.month)
+        writeNumber("day", snapshot.day, previous?.day)
+        writeNumber("week", snapshot.week, previous?.week)
     }
 
     fun readDeviceKnob(riveAnimationView: RiveAnimationView): Float {
