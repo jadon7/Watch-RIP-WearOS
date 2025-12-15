@@ -1231,17 +1231,26 @@ private class RiveRuntimeSession(
 
     private fun applyBooleanToViewModels(
         propertyName: String,
-        value: Boolean
+        value: Boolean,
+        touchStateMachines: Boolean = true
     ) {
-        if (config.mode == RiveBindingMode.STATE_MACHINE_ONLY) return
-        val tree = viewModelTree
-        if (tree != null) {
-            tree.forEachNode { node ->
-                runCatching { node.instance.setBooleanProperty(propertyName, value, this) }
-                    .onFailure { markPropertyMissing(propertyName, it) }
+        if (config.mode != RiveBindingMode.STATE_MACHINE_ONLY) {
+            val tree = viewModelTree
+            if (tree != null) {
+                tree.forEachNode { node ->
+                    runCatching { node.instance.setBooleanProperty(propertyName, value, this) }
+                        .onFailure { markPropertyMissing(propertyName, it) }
+                }
+            } else {
+                viewModelInstance?.setBooleanProperty(propertyName, value, this)
             }
-        } else {
-            viewModelInstance?.setBooleanProperty(propertyName, value, this)
+        }
+
+        if (touchStateMachines && config.mode != RiveBindingMode.VIEWMODEL_ONLY) {
+            val view = riveView
+            if (view != null) {
+                view.pushBooleanInputAcrossStateMachines(propertyName, value, this)
+            }
         }
     }
 
@@ -1401,7 +1410,7 @@ private class RiveRuntimeSession(
     fun setKnobActive(riveAnimationView: RiveAnimationView, active: Boolean) {
         if (active == lastKnobIsActive) return
         lastKnobIsActive = active
-        applyBooleanToViewModels("knobIsActive", active)
+        applyBooleanToViewModels("knobIsActive", active, touchStateMachines = true)
     }
 
     /**
@@ -1547,6 +1556,38 @@ private fun RiveAnimationView.pushTriggerAcrossStateMachines(
     }
     if (!fired) {
         Log.w(TAG_BINDING, "No state machine trigger named $triggerName")
+    }
+}
+
+private fun RiveAnimationView.pushBooleanInputAcrossStateMachines(
+    inputName: String,
+    value: Boolean,
+    session: RiveRuntimeSession
+) {
+    val artboard = controller?.activeArtboard ?: file?.firstArtboard ?: return
+    val playing = playingStateMachines
+    val targetMachines = if (playing.isNotEmpty()) {
+        playing.map { it.name }
+    } else {
+        artboard.stateMachineNames ?: emptyList()
+    }
+    var applied = false
+    targetMachines.forEach { machineName ->
+        val stateMachine = artboard.stateMachine(machineName)
+        val hasInput = stateMachine?.inputs?.any { it.name == inputName } == true
+        if (hasInput) {
+            try {
+                setBooleanState(machineName, inputName, value)
+                session.logWrite("stateMachine", inputName, value, "machine=$machineName")
+                session.notifyObservers(inputName, value)
+                applied = true
+            } catch (e: Exception) {
+                Log.e(TAG_BINDING, "Failed to set $inputName on $machineName", e)
+            }
+        }
+    }
+    if (!applied) {
+        Log.d(TAG_BINDING, "No state machine exposes boolean input: $inputName")
     }
 }
 
