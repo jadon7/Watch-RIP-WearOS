@@ -1063,7 +1063,7 @@ private fun String?.toRiveBindingMode(): RiveBindingMode? {
 
 private data class ViewModelNode(
     val instance: ViewModelInstance,
-    val definition: ViewModel,
+    val definition: ViewModel?,
     val properties: Map<String, ViewModel.PropertyDataType>,
     val children: List<ViewModelNode> = emptyList()
 )
@@ -1077,9 +1077,6 @@ private class RiveRuntimeSession(
     private var lastKnownDeviceKnob = 0f
     private var lastKnobIsActive = false
     private var viewModelTree: ViewModelNode? = null
-    private val numberTypes = setOf(ViewModel.PropertyDataType.NUMBER, ViewModel.PropertyDataType.INTEGER)
-    private val booleanTypes = setOf(ViewModel.PropertyDataType.BOOLEAN)
-    private val triggerTypes = setOf(ViewModel.PropertyDataType.TRIGGER)
     private val propertyObservers = mutableMapOf<String, MutableList<(Any?) -> Unit>>()
     val missingViewModelProperties = mutableSetOf<String>()
     var viewModelInstance: ViewModelInstance? = null
@@ -1136,11 +1133,11 @@ private class RiveRuntimeSession(
     private fun buildViewModelTree(
         file: RiveCoreFile,
         instance: ViewModelInstance,
-        definition: ViewModel,
+        definition: ViewModel?,
         depth: Int = 0
     ): ViewModelNode? {
         return runCatching {
-            val props = definition.properties.associate { it.name to it.type }
+            val props = definition?.properties?.associate { it.name to it.type } ?: emptyMap()
             val children = props
                 .filterValues { it == ViewModel.PropertyDataType.VIEW_MODEL }
                 .mapNotNull { (name, _) ->
@@ -1155,9 +1152,7 @@ private class RiveRuntimeSession(
                             }.onFailure {
                                 Log.w(TAG_BINDING_SESSION, "[$filePath] Nested ViewModel definition not found: ${childInstance.name}", it)
                             }.getOrNull()
-                            if (childDefinition != null) {
-                                buildViewModelTree(file, childInstance, childDefinition, depth + 1)
-                            } else null
+                            buildViewModelTree(file, childInstance, childDefinition, depth + 1)
                         }
                 }
             ViewModelNode(instance, definition, props, children)
@@ -1170,11 +1165,6 @@ private class RiveRuntimeSession(
         block(this)
         children.forEach { it.forEachNode(block) }
     }
-
-    private fun ViewModelNode.hasProperty(
-        name: String,
-        allowedTypes: Set<ViewModel.PropertyDataType>
-    ): Boolean = properties[name]?.let { it in allowedTypes } == true
 
     private fun applyNumberToViewModels(
         propertyName: String,
@@ -1189,9 +1179,8 @@ private class RiveRuntimeSession(
             val tree = viewModelTree
             if (tree != null) {
                 tree.forEachNode { node ->
-                    if (node.hasProperty(propertyName, numberTypes)) {
-                        node.instance.setNumberProperty(propertyName, value, this)
-                    }
+                    runCatching { node.instance.setNumberProperty(propertyName, value, this) }
+                        .onFailure { markPropertyMissing(propertyName, it) }
                 }
             } else {
                 viewModelInstance?.setNumberProperty(propertyName, value, this)
@@ -1210,9 +1199,8 @@ private class RiveRuntimeSession(
         val tree = viewModelTree
         if (tree != null) {
             tree.forEachNode { node ->
-                if (node.hasProperty(propertyName, booleanTypes)) {
-                    node.instance.setBooleanProperty(propertyName, value, this)
-                }
+                runCatching { node.instance.setBooleanProperty(propertyName, value, this) }
+                    .onFailure { markPropertyMissing(propertyName, it) }
             }
         } else {
             viewModelInstance?.setBooleanProperty(propertyName, value, this)
@@ -1225,10 +1213,8 @@ private class RiveRuntimeSession(
         val tree = viewModelTree
         if (tree != null) {
             tree.forEachNode { node ->
-                if (node.hasProperty(triggerName, triggerTypes)) {
-                    if (node.instance.triggerProperty(triggerName, this)) {
-                        handled = true
-                    }
+                if (node.instance.triggerProperty(triggerName, this)) {
+                    handled = true
                 }
             }
             return handled
