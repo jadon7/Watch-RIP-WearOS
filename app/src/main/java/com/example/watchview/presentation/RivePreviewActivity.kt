@@ -100,17 +100,15 @@ private const val TAG_KNOB_INTERP = "KnobInterpolation"
 // 每度旋转映射到的 deviceKnob 增量（调节敏感度时调整此值）
 private const val KNOB_DELTA_PER_DEGREE = 0.1f
 
-// ============ 全新方案：惯性物理系统（60fps + 速度平衡优化）============
-// 用户旋转速度到加速度的转换系数（推力强度）
-private const val KNOB_ACCELERATION_GAIN = 0.04f  // 提高推力，加快响应
+// ============ 全新方案：惯性物理系统（速度感知修复 v2）============
+// Delta 到速度的直接转换系数 - delta 越大（快速旋转），速度增量越大
+private const val KNOB_DELTA_TO_VELOCITY_GAIN = 1.5f  // 直接将 delta 转换为速度增量
 // 摩擦系数：每帧速度保留比例（0.95=低摩擦，0.85=高摩擦）
-private const val KNOB_FRICTION = 0.94f  // 适中摩擦，平衡速度和平滑
-// 最大速度：防止速度过快导致失控（单位/帧）- 60fps下的平衡点
-private const val KNOB_MAX_VELOCITY = 0.15f  // 平衡：既平滑又不慢
+private const val KNOB_FRICTION = 0.88f  // 中等摩擦，保持惯性
+// 最大速度：防止速度过快导致失控（单位/帧）
+private const val KNOB_MAX_VELOCITY = 0.5f  // 允许更高速度
 // 最小速度：低于此值视为静止，归零停止
-private const val KNOB_MIN_VELOCITY = 0.0005f
-// 速度衰减检测阈值：判断用户是否停止旋转（秒）
-private const val KNOB_ROTATION_TIMEOUT_MS = 80L
+private const val KNOB_MIN_VELOCITY = 0.001f
 // 更新频率：每帧间隔（ms）- 匹配手表60fps
 private const val KNOB_UPDATE_INTERVAL_MS = 16L
 
@@ -774,15 +772,11 @@ private fun RivePlayerUI(
     
     var reloadToken by remember { mutableStateOf(0) }
 
-    // ============ 全新方案：惯性物理系统状态 ============
+    // ============ 全新方案：惯性物理系统状态（简化版）============
     // deviceKnob 当前值（位置）
     var deviceKnobValue by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
-    // deviceKnob 当前速度（单位/帧）
+    // deviceKnob 当前速度（单位/帧）- 直接从 delta 累积，不需要中间变量
     var deviceKnobVelocity by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
-    // 用户旋转加速度（从用户速度转换而来）
-    var userAcceleration by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
-    // 上次旋转时间戳
-    var lastRotationTime by remember(file.absolutePath, reloadToken) { mutableStateOf(0L) }
     // 显示值：用于 UI 显示
     var deviceKnobDisplay by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
 
@@ -858,43 +852,19 @@ private fun RivePlayerUI(
         }
     }
     
-    // ============ 全新逻辑：监听旋钮增量，计算用户旋转速度并转换为加速度 ============
+    // ============ 全新逻辑：直接将 delta 转换为速度增量 ============
+    // 核心思想：快速旋转 → 大 delta → 大速度增量；慢速旋转 → 小 delta → 小速度增量
     if (!ENABLE_DEVICE_KNOB_LOOP) {
         LaunchedEffect(rotaryKnobDeltaFlow) {
             rotaryKnobDeltaFlow.collect { delta ->
-                val currentTime = System.currentTimeMillis()
-                val timeDelta = if (lastRotationTime > 0) {
-                    (currentTime - lastRotationTime).coerceAtLeast(1)
-                } else {
-                    16L // 首次默认 16ms
-                }
-                lastRotationTime = currentTime
+                // 直接将 delta 转换为速度增量并累积
+                val velocityBoost = delta * KNOB_DELTA_TO_VELOCITY_GAIN
+                deviceKnobVelocity += velocityBoost
 
-                // 计算用户旋转速度（单位/秒）
-                val userRotationSpeed = delta / (timeDelta / 1000f)
+                // 限制最大速度
+                deviceKnobVelocity = deviceKnobVelocity.coerceIn(-KNOB_MAX_VELOCITY, KNOB_MAX_VELOCITY)
 
-                // 转换为加速度（推力强度）
-                val acceleration = userRotationSpeed * KNOB_ACCELERATION_GAIN
-
-                // 累积加速度（用户持续推动，加速度叠加）
-                userAcceleration = acceleration
-
-                Log.d(TAG_KNOB_INTERP, "User input: delta=${"%.3f".format(delta)}, speed=${"%.2f".format(userRotationSpeed)}/s, accel=${"%.4f".format(acceleration)}")
-            }
-        }
-
-        // 检测用户停止旋转，清零加速度
-        LaunchedEffect(Unit) {
-            while (isActive) {
-                delay(KNOB_ROTATION_TIMEOUT_MS)
-                val currentTime = System.currentTimeMillis()
-                if (lastRotationTime > 0 && (currentTime - lastRotationTime) >= KNOB_ROTATION_TIMEOUT_MS) {
-                    // 用户已停止旋转，清零加速度
-                    if (userAcceleration != 0f) {
-                        userAcceleration = 0f
-                        Log.d(TAG_KNOB_INTERP, "User stopped rotating, acceleration cleared")
-                    }
-                }
+                Log.d(TAG_KNOB_INTERP, "User input: delta=${"%.3f".format(delta)}, velocityBoost=${"%.4f".format(velocityBoost)}, newVelocity=${"%.4f".format(deviceKnobVelocity)}")
             }
         }
     }
@@ -915,21 +885,16 @@ private fun RivePlayerUI(
         focusRequester.requestFocus()
     }
 
-    // ============ 全新逻辑：惯性物理更新系统 ============
+    // ============ 全新逻辑：简化的惯性物理更新系统 ============
+    // 速度已经在旋钮事件中累积，这里只负责摩擦力和位置更新
     if (!ENABLE_DEVICE_KNOB_LOOP) {
         LaunchedEffect(riveViewRef, runtimeSession) {
             val view = riveViewRef ?: return@LaunchedEffect
             while (isActive) {
-                // ====== 步骤 1：应用加速度（用户推力） ======
-                deviceKnobVelocity += userAcceleration
-
-                // ====== 步骤 2：应用摩擦力（自然减速） ======
+                // ====== 步骤 1：应用摩擦力（自然减速） ======
                 deviceKnobVelocity *= KNOB_FRICTION
 
-                // ====== 步骤 3：限制最大速度 ======
-                deviceKnobVelocity = deviceKnobVelocity.coerceIn(-KNOB_MAX_VELOCITY, KNOB_MAX_VELOCITY)
-
-                // ====== 步骤 4：检测静止 ======
+                // ====== 步骤 2：检测静止 ======
                 if (kotlin.math.abs(deviceKnobVelocity) < KNOB_MIN_VELOCITY) {
                     deviceKnobVelocity = 0f
                     // 静止状态，但仍然更新显示
@@ -938,22 +903,22 @@ private fun RivePlayerUI(
                     continue
                 }
 
-                // ====== 步骤 5：更新位置 ======
+                // ====== 步骤 3：更新位置 ======
                 val oldValue = deviceKnobValue
                 val newValue = (deviceKnobValue + deviceKnobVelocity).coerceAtLeast(0f)
 
-                // ====== 步骤 6：检测整数跨越，触发触觉反馈 ======
+                // ====== 步骤 4：检测整数跨越，触发触觉反馈 ======
                 val crossings = countIntegerCrossings(oldValue, newValue)
                 if (crossings > 0) {
                     repeat(crossings) { onKnobIntegerCross() }
                 }
 
-                // ====== 步骤 7：更新状态并写入 Rive ======
+                // ====== 步骤 5：更新状态并写入 Rive ======
                 deviceKnobValue = newValue
                 deviceKnobDisplay = newValue.round(2)
                 runtimeSession.updateDeviceKnob(view, newValue)
 
-                Log.d(TAG_KNOB_INTERP, "value: ${newValue.round(3)}, velocity: ${"%.4f".format(deviceKnobVelocity)}, accel: ${"%.4f".format(userAcceleration)}")
+                Log.d(TAG_KNOB_INTERP, "Physics: value=${newValue.round(3)}, velocity=${"%.4f".format(deviceKnobVelocity)}")
 
                 delay(KNOB_UPDATE_INTERVAL_MS)
             }
