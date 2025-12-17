@@ -100,15 +100,15 @@ private const val TAG_KNOB_INTERP = "KnobInterpolation"
 // 每度旋转映射到的 deviceKnob 增量（调节敏感度时调整此值）
 private const val KNOB_DELTA_PER_DEGREE = 0.1f
 
-// ============ 全新方案：惯性物理系统（针对60fps屏幕优化）============
+// ============ 全新方案：惯性物理系统（60fps + 速度平衡优化）============
 // 用户旋转速度到加速度的转换系数（推力强度）
-private const val KNOB_ACCELERATION_GAIN = 0.025f  // 极小推力，确保平滑
+private const val KNOB_ACCELERATION_GAIN = 0.04f  // 提高推力，加快响应
 // 摩擦系数：每帧速度保留比例（0.95=低摩擦，0.85=高摩擦）
-private const val KNOB_FRICTION = 0.96f  // 高摩擦系数，慢速衰减
-// 最大速度：防止速度过快导致失控（单位/帧）- 针对60fps优化
-private const val KNOB_MAX_VELOCITY = 0.08f  // 极小步长，确保60fps下平滑
+private const val KNOB_FRICTION = 0.94f  // 适中摩擦，平衡速度和平滑
+// 最大速度：防止速度过快导致失控（单位/帧）- 60fps下的平衡点
+private const val KNOB_MAX_VELOCITY = 0.15f  // 平衡：既平滑又不慢
 // 最小速度：低于此值视为静止，归零停止
-private const val KNOB_MIN_VELOCITY = 0.0003f
+private const val KNOB_MIN_VELOCITY = 0.0005f
 // 速度衰减检测阈值：判断用户是否停止旋转（秒）
 private const val KNOB_ROTATION_TIMEOUT_MS = 80L
 // 更新频率：每帧间隔（ms）- 匹配手表60fps
