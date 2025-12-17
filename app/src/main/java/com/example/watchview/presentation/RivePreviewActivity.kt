@@ -102,17 +102,17 @@ private const val KNOB_DELTA_PER_DEGREE = 0.1f
 
 // ============ 全新方案：惯性物理系统 ============
 // 用户旋转速度到加速度的转换系数（推力强度）
-private const val KNOB_ACCELERATION_GAIN = 0.08f
+private const val KNOB_ACCELERATION_GAIN = 0.05f  // 降低推力，因为更新频率提高了
 // 摩擦系数：每帧速度保留比例（0.95=低摩擦，0.85=高摩擦）
-private const val KNOB_FRICTION = 0.92f
+private const val KNOB_FRICTION = 0.95f  // 提高摩擦系数（更新频率提高需要补偿）
 // 最大速度：防止速度过快导致失控（单位/帧）
-private const val KNOB_MAX_VELOCITY = 0.6f
+private const val KNOB_MAX_VELOCITY = 0.25f  // 降低最大速度，因为更新频率更高
 // 最小速度：低于此值视为静止，归零停止
-private const val KNOB_MIN_VELOCITY = 0.001f
+private const val KNOB_MIN_VELOCITY = 0.0005f
 // 速度衰减检测阈值：判断用户是否停止旋转（秒）
 private const val KNOB_ROTATION_TIMEOUT_MS = 80L
-// 更新频率：每帧间隔（ms）
-private const val KNOB_UPDATE_INTERVAL_MS = 16L
+// 更新频率：每帧间隔（ms）- 提高到 8ms（~120fps）
+private const val KNOB_UPDATE_INTERVAL_MS = 8L
 
 // ============ 旧参数（保留兼容） ============
 private const val DEVICE_KNOB_SMOOTHING_FACTOR = 0.18f
