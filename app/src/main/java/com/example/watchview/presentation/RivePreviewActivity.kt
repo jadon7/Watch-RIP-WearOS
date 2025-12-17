@@ -95,18 +95,37 @@ private const val EXTRA_RIVE_BINDING_MODE = "extra_rive_binding_mode"
 private const val TAG_BINDING = "RiveBinding"
 private const val TAG_BINDING_SESSION = "RiveBindingSession"
 private const val TAG_BINDING_LISTENER = "RiveBindingListener"
+private const val TAG_KNOB_INTERP = "KnobInterpolation"
+
 // 每度旋转映射到的 deviceKnob 增量（调节敏感度时调整此值）
 private const val KNOB_DELTA_PER_DEGREE = 0.1f
-// 平滑参数：单帧趋近比例、最大单帧步长、平滑帧间隔
+
+// ============ 新的平滑插值参数 ============
+// 插值策略：当 delta 变化超过此阈值时，生成中间插值点
+private const val KNOB_INTERPOLATION_THRESHOLD = 0.5f
+// 插值步长：每个中间值之间的最大间距
+private const val KNOB_INTERPOLATION_STEP_SIZE = 0.15f
+// 插值帧间隔：消费插值队列的时间间隔（ms）
+private const val KNOB_INTERPOLATION_INTERVAL_MS = 16L
+// 插值曲线类型：cubic_bezier 提供更自然的加减速
+private const val KNOB_USE_CUBIC_INTERPOLATION = true
+// 三次贝塞尔曲线控制点（标准 ease-in-out）
+private const val BEZIER_P1 = 0.42f
+private const val BEZIER_P2 = 0.0f
+private const val BEZIER_P3 = 0.58f
+private const val BEZIER_P4 = 1.0f
+
+// ============ 旧参数（保留兼容） ============
 private const val DEVICE_KNOB_SMOOTHING_FACTOR = 0.18f
 private const val DEVICE_KNOB_MAX_STEP_PER_TICK = 0.3f
 private const val DEVICE_KNOB_SMOOTHING_INTERVAL_MS = 16L
+
 // 连续循环驱动 deviceKnob 开关与参数
 private const val ENABLE_DEVICE_KNOB_LOOP = false
 private const val DEVICE_KNOB_LOOP_MAX = 13f
 private const val DEVICE_KNOB_LOOP_DURATION_MS = 4000L
 private const val DEVICE_KNOB_LOOP_INTERVAL_MS = 1000L
-private const val KNOB_ACTIVE_TIMEOUT_MS = 0L
+private const val KNOB_ACTIVE_TIMEOUT_MS = 400L  // 修改为 400ms，让 Rive 能感知旋转状态
 private const val HAPTIC_SCROLL_TICK = 10
 private const val STEM_KEY_FLAGS =
     WatchKeyController.FLAG_CONVERT_STEM_TO_FX or
@@ -760,6 +779,11 @@ private fun RivePlayerUI(
     var currentKnobValue by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
     var targetKnobValue by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
     var deviceKnobDisplay by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
+
+    // ============ 新增：插值队列系统 ============
+    // 使用 ArrayDeque 存储待消费的插值点，提供高效的队列操作
+    val interpolationQueue = remember(file.absolutePath, reloadToken) { ArrayDeque<Float>() }
+
     // 使用 remember 保持引用，但不作为 Compose 状态，避免触发 recomposition
     var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
     
@@ -833,18 +857,46 @@ private fun RivePlayerUI(
         }
     }
     
-    // 监听旋钮增量流，实时更新 deviceKnob 值（仅在循环模式关闭时启用）
+    // ============ 新逻辑：监听旋钮增量流，生成平滑插值队列 ============
     if (!ENABLE_DEVICE_KNOB_LOOP) {
         LaunchedEffect(rotaryKnobDeltaFlow, riveViewRef, runtimeSession) {
             rotaryKnobDeltaFlow.collect { delta ->
                 val view = riveViewRef ?: return@collect
-                val base = runtimeSession.readDeviceKnob(view).coerceAtLeast(0f)
-                val nextTarget = (base + delta).coerceAtLeast(0f)
-                targetKnobValue = nextTarget
-                currentKnobValue = base
-                deviceKnobDisplay = base.round(2)
-                runtimeSession.updateDeviceKnob(view, base)
-                Log.d("RotaryKnob", "deviceKnob target updated: $nextTarget (delta: $delta)")
+
+                // 读取当前值作为起点
+                val currentValue = runtimeSession.readDeviceKnob(view).coerceAtLeast(0f)
+                val targetValue = (currentValue + delta).coerceAtLeast(0f)
+
+                // 生成从当前值到目标值的插值点列表
+                val interpolationPoints = generateInterpolationQueue(
+                    start = currentValue,
+                    end = targetValue,
+                    stepSize = KNOB_INTERPOLATION_STEP_SIZE,
+                    useCubic = KNOB_USE_CUBIC_INTERPOLATION
+                )
+
+                // 将插值点加入队列（线程安全）
+                synchronized(interpolationQueue) {
+                    // 如果队列已有数据，从队列末尾的值开始插值，避免跳变
+                    val lastQueueValue = interpolationQueue.lastOrNull()
+                    if (lastQueueValue != null && lastQueueValue != currentValue) {
+                        // 队列末尾与当前值不一致，需要先插值到队列末尾
+                        val bridgePoints = generateInterpolationQueue(
+                            start = currentValue,
+                            end = lastQueueValue,
+                            stepSize = KNOB_INTERPOLATION_STEP_SIZE,
+                            useCubic = false // 桥接使用线性插值
+                        )
+                        Log.d(TAG_KNOB_INTERP, "Bridging from $currentValue to $lastQueueValue with ${bridgePoints.size} points")
+                        interpolationQueue.addAll(bridgePoints)
+                    }
+
+                    interpolationQueue.addAll(interpolationPoints)
+                    Log.d(TAG_KNOB_INTERP, "Queue size after adding: ${interpolationQueue.size}, target: ${targetValue.round(2)}")
+                }
+
+                // 更新目标值（用于显示和同步检测）
+                targetKnobValue = targetValue
             }
         }
     }
@@ -880,35 +932,49 @@ private fun RivePlayerUI(
         }
     }
 
-    // 平滑逼近目标值，降低单帧跳变感
+    // ============ 新逻辑：消费插值队列，平滑写入 deviceKnob ============
     if (!ENABLE_DEVICE_KNOB_LOOP) {
         LaunchedEffect(riveViewRef, runtimeSession) {
             val view = riveViewRef ?: return@LaunchedEffect
             while (isActive) {
-                val current = currentKnobValue
-                val target = targetKnobValue
-                val diff = target - current
-                if (kotlin.math.abs(diff) < 0.005f) {
-                    delay(DEVICE_KNOB_SMOOTHING_INTERVAL_MS)
-                    continue
+                // 从队列中取出下一个插值点
+                val nextValue: Float? = synchronized(interpolationQueue) {
+                    if (interpolationQueue.isNotEmpty()) {
+                        interpolationQueue.removeFirst()
+                    } else {
+                        null
+                    }
                 }
-                // 插值：先按比例限速，再用 ease-out 映射步长，避免大跨度抖动
-                val step = (diff * DEVICE_KNOB_SMOOTHING_FACTOR)
-                    .coerceIn(-DEVICE_KNOB_MAX_STEP_PER_TICK, DEVICE_KNOB_MAX_STEP_PER_TICK)
-                val t = (abs(step) / DEVICE_KNOB_MAX_STEP_PER_TICK).coerceIn(0f, 1f)
-                val easedStep = easeOutQuad(t) * DEVICE_KNOB_MAX_STEP_PER_TICK * if (step >= 0) 1f else -1f
-                val first = (current + easedStep * 0.4f).coerceAtLeast(0f)
-                val second = (first + easedStep * 0.6f).coerceAtLeast(0f)
-                val next = second.round(3)
-                val crossings = countIntegerCrossings(current, next)
-                if (crossings > 0) {
-                    repeat(crossings) { onKnobIntegerCross() }
+
+                if (nextValue != null) {
+                    // 检测整数跨越，触发触觉反馈
+                    val crossings = countIntegerCrossings(currentKnobValue, nextValue)
+                    if (crossings > 0) {
+                        repeat(crossings) { onKnobIntegerCross() }
+                    }
+
+                    // 更新当前值和显示值
+                    val newValue = nextValue
+                    currentKnobValue = newValue
+                    deviceKnobDisplay = newValue.round(2)
+
+                    // 写入 Rive ViewModel
+                    runtimeSession.updateDeviceKnob(view, newValue)
+
+                    Log.d(TAG_KNOB_INTERP, "Consumed interpolation point: ${newValue.round(3)}, queue remaining: ${interpolationQueue.size}")
+                } else {
+                    // 队列为空，检查是否需要同步
+                    val live = runtimeSession.readDeviceKnob(view)
+                    if (kotlin.math.abs(live - currentKnobValue) > 0.01f) {
+                        // 发现偏差，可能是 Rive 内部修改了值，同步回来
+                        currentKnobValue = live
+                        deviceKnobDisplay = live.round(2)
+                        Log.d(TAG_KNOB_INTERP, "Synced from Rive: ${live.round(2)}")
+                    }
                 }
-                currentKnobValue = next
-                deviceKnobDisplay = next.round(2)
-                runtimeSession.updateDeviceKnob(view, (first.round(3)))
-                runtimeSession.updateDeviceKnob(view, next)
-                delay(DEVICE_KNOB_SMOOTHING_INTERVAL_MS)
+
+                // 控制消费速率
+                delay(KNOB_INTERPOLATION_INTERVAL_MS)
             }
         }
     } else {
@@ -1059,6 +1125,90 @@ private fun Float.round(decimals: Int): Float {
 private fun easeOutQuad(t: Float): Float {
     val clamped = t.coerceIn(0f, 1f)
     return 1f - (1f - clamped) * (1f - clamped)
+}
+
+// ============ 新增：平滑插值系统 ============
+
+/**
+ * 三次贝塞尔曲线缓动函数（标准 cubic-bezier）
+ * 提供更自然的加速和减速效果
+ */
+private fun cubicBezier(t: Float, p1: Float, p2: Float, p3: Float, p4: Float): Float {
+    val t2 = t * t
+    val t3 = t2 * t
+    val mt = 1f - t
+    val mt2 = mt * mt
+    val mt3 = mt2 * mt
+
+    return p1 * mt3 + 3f * p2 * mt2 * t + 3f * p3 * mt * t2 + p4 * t3
+}
+
+/**
+ * 使用标准 ease-in-out 曲线的缓动函数
+ */
+private fun easeInOutCubic(t: Float): Float {
+    val clamped = t.coerceIn(0f, 1f)
+    return if (clamped < 0.5f) {
+        4f * clamped * clamped * clamped
+    } else {
+        val x = -2f * clamped + 2f
+        1f - (x * x * x) / 2f
+    }
+}
+
+/**
+ * 插值点数据类
+ */
+private data class InterpolationPoint(
+    val value: Float,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+/**
+ * 生成从 start 到 end 的平滑插值队列
+ * @param start 起始值
+ * @param end 目标值
+ * @param stepSize 每步的最大间距
+ * @param useCubic 是否使用三次贝塞尔曲线
+ * @return 插值点列表
+ */
+private fun generateInterpolationQueue(
+    start: Float,
+    end: Float,
+    stepSize: Float = KNOB_INTERPOLATION_STEP_SIZE,
+    useCubic: Boolean = KNOB_USE_CUBIC_INTERPOLATION
+): List<Float> {
+    val delta = end - start
+    val absDelta = kotlin.math.abs(delta)
+
+    // 如果变化很小，不需要插值
+    if (absDelta < KNOB_INTERPOLATION_THRESHOLD) {
+        return listOf(end)
+    }
+
+    // 计算需要多少步
+    val steps = kotlin.math.ceil(absDelta / stepSize).toInt().coerceAtLeast(2)
+    val points = mutableListOf<Float>()
+
+    for (i in 1..steps) {
+        val t = i.toFloat() / steps
+        val easedT = if (useCubic) {
+            easeInOutCubic(t)
+        } else {
+            easeOutQuad(t)
+        }
+        val interpolatedValue = start + delta * easedT
+        points.add(interpolatedValue.round(3))
+    }
+
+    // 确保最后一个点精确等于目标值
+    if (points.isNotEmpty() && points.last() != end) {
+        points[points.lastIndex] = end
+    }
+
+    Log.d(TAG_KNOB_INTERP, "Generated ${points.size} interpolation points from ${start.round(2)} to ${end.round(2)}, delta=${"%.3f".format(delta)}")
+
+    return points
 }
 
 // 添加函数检查文件是否在外部存储中
