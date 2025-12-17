@@ -115,6 +115,14 @@ private const val BEZIER_P2 = 0.0f
 private const val BEZIER_P3 = 0.58f
 private const val BEZIER_P4 = 1.0f
 
+// ============ 队列管理参数 ============
+// 最大队列长度：超过此值时清空队列直接跳转到目标值
+private const val KNOB_MAX_QUEUE_SIZE = 15
+// 新输入时的队列策略：true=清空旧队列, false=追加到队列末尾
+private const val KNOB_CLEAR_QUEUE_ON_NEW_INPUT = true
+// 快速跳转阈值：队列超过此值时，跳过中间点直接到目标
+private const val KNOB_FAST_FORWARD_THRESHOLD = 20
+
 // ============ 旧参数（保留兼容） ============
 private const val DEVICE_KNOB_SMOOTHING_FACTOR = 0.18f
 private const val DEVICE_KNOB_MAX_STEP_PER_TICK = 0.3f
@@ -863,39 +871,55 @@ private fun RivePlayerUI(
             rotaryKnobDeltaFlow.collect { delta ->
                 val view = riveViewRef ?: return@collect
 
-                // 读取当前值作为起点
-                val currentValue = runtimeSession.readDeviceKnob(view).coerceAtLeast(0f)
-                val targetValue = (currentValue + delta).coerceAtLeast(0f)
+                // 决定起点：如果启用清空策略，从当前显示值开始；否则从队列末尾开始
+                val startValue: Float
+                val shouldClearQueue: Boolean
 
-                // 生成从当前值到目标值的插值点列表
+                synchronized(interpolationQueue) {
+                    val queueSize = interpolationQueue.size
+
+                    // 检查是否需要清空队列
+                    shouldClearQueue = KNOB_CLEAR_QUEUE_ON_NEW_INPUT || queueSize > KNOB_MAX_QUEUE_SIZE
+
+                    if (shouldClearQueue) {
+                        // 清空队列，从当前显示值开始
+                        if (queueSize > 0) {
+                            Log.d(TAG_KNOB_INTERP, "Clearing queue (size: $queueSize), reason: ${if (KNOB_CLEAR_QUEUE_ON_NEW_INPUT) "new input policy" else "queue overflow"}")
+                            interpolationQueue.clear()
+                        }
+                        startValue = currentKnobValue
+                    } else {
+                        // 从队列末尾继续
+                        startValue = interpolationQueue.lastOrNull() ?: currentKnobValue
+                    }
+                }
+
+                // 计算目标值
+                val targetValue = (startValue + delta).coerceAtLeast(0f)
+
+                // 生成插值点
                 val interpolationPoints = generateInterpolationQueue(
-                    start = currentValue,
+                    start = startValue,
                     end = targetValue,
                     stepSize = KNOB_INTERPOLATION_STEP_SIZE,
                     useCubic = KNOB_USE_CUBIC_INTERPOLATION
                 )
 
-                // 将插值点加入队列（线程安全）
+                // 加入队列
                 synchronized(interpolationQueue) {
-                    // 如果队列已有数据，从队列末尾的值开始插值，避免跳变
-                    val lastQueueValue = interpolationQueue.lastOrNull()
-                    if (lastQueueValue != null && lastQueueValue != currentValue) {
-                        // 队列末尾与当前值不一致，需要先插值到队列末尾
-                        val bridgePoints = generateInterpolationQueue(
-                            start = currentValue,
-                            end = lastQueueValue,
-                            stepSize = KNOB_INTERPOLATION_STEP_SIZE,
-                            useCubic = false // 桥接使用线性插值
-                        )
-                        Log.d(TAG_KNOB_INTERP, "Bridging from $currentValue to $lastQueueValue with ${bridgePoints.size} points")
-                        interpolationQueue.addAll(bridgePoints)
-                    }
-
                     interpolationQueue.addAll(interpolationPoints)
-                    Log.d(TAG_KNOB_INTERP, "Queue size after adding: ${interpolationQueue.size}, target: ${targetValue.round(2)}")
+                    val newSize = interpolationQueue.size
+                    Log.d(TAG_KNOB_INTERP, "Added ${interpolationPoints.size} points, queue size: $newSize, target: ${targetValue.round(2)}")
+
+                    // 如果队列仍然过长，执行快速跳转
+                    if (newSize > KNOB_FAST_FORWARD_THRESHOLD) {
+                        Log.w(TAG_KNOB_INTERP, "Queue too long ($newSize), fast-forwarding to target")
+                        interpolationQueue.clear()
+                        interpolationQueue.add(targetValue)
+                    }
                 }
 
-                // 更新目标值（用于显示和同步检测）
+                // 更新目标值
                 targetKnobValue = targetValue
             }
         }
