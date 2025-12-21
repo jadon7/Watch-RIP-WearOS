@@ -101,21 +101,20 @@ private const val TAG_KNOB_INTERP = "KnobInterpolation"
 // 每度旋转映射到的 deviceKnob 增量（调节敏感度时调整此值）
 private const val KNOB_DELTA_PER_DEGREE = 0.1f
 
-// ============ v11：200ms滑动窗口 + 固定步长 + 动态频率 ============
-// 速度采样窗口（ms）- 用于计算平均速度
-private const val KNOB_SPEED_WINDOW_MS = 200L
-// 最大旋转速度（单位/秒）- 用户快速旋转的上限
-private const val KNOB_MAX_ROTATION_SPEED = 60.0f
-// 最小旋转速度（单位/秒）- 低于此值视为静止
-private const val KNOB_MIN_ROTATION_SPEED = 0.08f
-// 摩擦系数 - 无输入时每帧速度保留比例
-private const val KNOB_FRICTION = 0.8f  // 惯性滑行（从0.92降到0.6，惯性变为原来1/5）
-// 固定传参步长 - 每次传给 Rive 的固定增量
-private const val KNOB_FIXED_STEP = 0.03f
-// 无输入超时（ms）- 超过此时间开始应用摩擦力
+// ============ v14：简化直接控制方案 ============
+// 直接缩放系数 - 控制旋转一格对应的值变化
+private const val KNOB_DIRECT_SCALING = 0.3f
+// 惯性速度衰减系数 - 每帧乘以此值（0.95 = 温和衰减）
+private const val KNOB_VELOCITY_DECAY = 0.92f
+// 最小速度阈值 - 低于此值视为静止
+private const val KNOB_MIN_VELOCITY = 0.01f
+// 更新间隔（60fps）
+private const val KNOB_UPDATE_INTERVAL_MS = 16L
+// deviceKnob 的最小/最大值
+private const val KNOB_MIN_VALUE = 0f
+private const val KNOB_MAX_VALUE = 1000f
+// 用户输入超时 - 超过此时间无输入则认为停止
 private const val KNOB_INPUT_TIMEOUT_MS = 100L
-// 更新频率：每帧间隔（ms）
-private const val KNOB_UPDATE_INTERVAL_MS = 12L
 
 // ============ 旧参数（保留兼容） ============
 private const val DEVICE_KNOB_SMOOTHING_FACTOR = 0.18f
@@ -777,22 +776,15 @@ private fun RivePlayerUI(
     
     var reloadToken by remember { mutableStateOf(0) }
 
-    // ============ v11：200ms滑动窗口 + 固定步长 + 动态频率系统状态 ============
-    // deviceKnob 当前值（位置）
+    // ============ v14：简化直接控制状态 ============
+    // deviceKnob 当前值（虚拟滚动值）
     var deviceKnobValue by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
-    // 旋转速度（单位/秒）- 正值向前，负值向后
-    var rotationSpeed by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
-    // 累积器：累积速度，达到步长时传参
-    var accumulator by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
-    // 上次输入时间（毫秒）
+    // 当前惯性速度（每帧的增量）
+    var deviceKnobVelocity by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
+    // 上次输入时间（毫秒） - 用于判断用户是否仍在操作
     var lastInputTime by remember(file.absolutePath, reloadToken) { mutableStateOf(0L) }
     // 上次震动时的整数值，用于追踪floor变化
     var lastVibratedFloor by remember(file.absolutePath, reloadToken) { mutableStateOf(0) }
-    // 200ms滑动窗口：存储时间戳和增量对 (timestamp, delta)
-    // 优化：不使用 mutableStateOf，避免触发重组
-    val inputWindow = remember(file.absolutePath, reloadToken) {
-        ArrayDeque<Pair<Long, Float>>()
-    }
 
     // 使用 remember 保持引用，但不作为 Compose 状态，避免触发 recomposition
     var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
@@ -848,9 +840,8 @@ private fun RivePlayerUI(
                     deviceKnobValue = roundedValue
                     // 更新震动追踪状态
                     lastVibratedFloor = floor(deviceKnobValue).toInt()
-                    // 清空累积器，避免冲突
-                    accumulator = 0f
-                    rotationSpeed = 0f
+                    // 重置速度，停止惯性
+                    deviceKnobVelocity = 0f
                 }
             }
         }
@@ -890,63 +881,83 @@ private fun RivePlayerUI(
         }
     }
     
-    // ============ v11：200ms滑动窗口速度计算 ============
-    // 核心思想：持续采样200ms窗口内所有输入，计算平均速度
-    // - 用户操作持续变化，窗口也持续滑动
-    // - 速度 = 窗口内所有delta之和 / 窗口时间跨度
-    // - 不使用EMA，直接从窗口计算真实平均速度
+    // ============ v14：输入层 - 监听旋钮事件 ============
     if (!ENABLE_DEVICE_KNOB_LOOP) {
         LaunchedEffect(rotaryKnobDeltaFlow) {
             rotaryKnobDeltaFlow.collect { delta ->
                 // 死区过滤：忽略极小的抖动
-                if (kotlin.math.abs(delta) < 0.01f) {
+                if (abs(delta) < 0.01f) {
                     return@collect
                 }
 
                 val currentTime = System.currentTimeMillis()
 
-                // 1. 将新输入加入窗口
-                inputWindow.addLast(Pair(currentTime, delta))
+                // 【用户输入阶段】
+                // 1. 直接更新 deviceKnob 值
+                val scaledDelta = delta * KNOB_DIRECT_SCALING
+                deviceKnobValue = (deviceKnobValue + scaledDelta).coerceIn(KNOB_MIN_VALUE, KNOB_MAX_VALUE)
 
-                // 2. 移除超过200ms的旧输入
-                while (inputWindow.isNotEmpty() && currentTime - inputWindow.first().first > KNOB_SPEED_WINDOW_MS) {
-                    inputWindow.removeFirst()
-                }
+                // 2. 更新速度（用于惯性）
+                deviceKnobVelocity = scaledDelta
 
-                // 3. 计算速度（使用真实时间间隔）
-                val calculatedSpeed = if (inputWindow.size >= 2) {
-                    // 多个输入：从窗口计算平均速度
-                    val totalDelta = inputWindow.sumOf { it.second.toDouble() }.toFloat()
-                    val timeSpan = (inputWindow.last().first - inputWindow.first().first) / 1000f
-                    if (timeSpan > 0) totalDelta / timeSpan else 0f
-                } else {
-                    // 单个输入：使用真实时间间隔
-                    val timeSinceLastInput = if (lastInputTime > 0) {
-                        (currentTime - lastInputTime) / 1000f  // 转为秒
-                    } else {
-                        0.016f  // 首次输入假设16ms
-                    }
-                    if (timeSinceLastInput > 0) delta / timeSinceLastInput else 0f
-                }
+                // 3. 立即同步到 Rive
+                riveViewRef?.let { view ->
+                    runtimeSession.updateDeviceKnob(view, deviceKnobValue)
 
-                // 限制最大速度
-                rotationSpeed = calculatedSpeed.coerceIn(-KNOB_MAX_ROTATION_SPEED, KNOB_MAX_ROTATION_SPEED)
-
-                // 非线性速度映射：慢速压缩，快速保持不变
-                val absSpeed = kotlin.math.abs(rotationSpeed)
-                val speedFactor = when {
-                    absSpeed <= 3f -> 0.0001f  // 慢速（0-3单位/秒）：变为1/10000
-                    absSpeed >= 20f -> 1.0f  // 快速（20+单位/秒）：保持不变
-                    else -> {
-                        // 中速（3-20单位/秒）：ease-out-quad曲线从0.0001到1.0
-                        val t = (absSpeed - 3f) / 17f
-                        val easedT = 1f - (1f - t) * (1f - t)  // ease-out-quad
-                        0.0001f + easedT * 0.9999f
+                    // 触觉反馈
+                    val currentFloor = floor(deviceKnobValue).toInt()
+                    if (currentFloor != lastVibratedFloor) {
+                        onKnobIntegerCross()
+                        lastVibratedFloor = currentFloor
                     }
                 }
-                rotationSpeed *= speedFactor
 
                 lastInputTime = currentTime
+
+                Log.d(TAG_KNOB_INTERP, "Input: delta=$delta, value=$deviceKnobValue, velocity=$deviceKnobVelocity")
+            }
+        }
+    }
+
+    // ============ v14：惯性层 - 速度衰减和更新 ============
+    if (!ENABLE_DEVICE_KNOB_LOOP) {
+        LaunchedEffect(riveViewRef, runtimeSession) {
+            while (isActive) {
+                val currentTime = System.currentTimeMillis()
+                val timeSinceLastInput = currentTime - lastInputTime
+
+                // 如果用户停止输入超过阈值，开始应用惯性
+                if (timeSinceLastInput > KNOB_INPUT_TIMEOUT_MS && abs(deviceKnobVelocity) > KNOB_MIN_VELOCITY) {
+                    // 【惯性阶段】
+                    // 1. 应用速度到值
+                    deviceKnobValue = (deviceKnobValue + deviceKnobVelocity).coerceIn(KNOB_MIN_VALUE, KNOB_MAX_VALUE)
+
+                    // 2. 速度衰减
+                    deviceKnobVelocity *= KNOB_VELOCITY_DECAY
+
+                    // 3. 检查边界碰撞，速度归零
+                    if (deviceKnobValue <= KNOB_MIN_VALUE || deviceKnobValue >= KNOB_MAX_VALUE) {
+                        deviceKnobVelocity = 0f
+                    }
+
+                    // 4. 同步到 Rive
+                    riveViewRef?.let { view ->
+                        runtimeSession.updateDeviceKnob(view, deviceKnobValue)
+
+                        // 惯性阶段不震动，只更新追踪
+                        val currentFloor = floor(deviceKnobValue).toInt()
+                        if (currentFloor != lastVibratedFloor) {
+                            lastVibratedFloor = currentFloor
+                        }
+                    }
+
+                    Log.d(TAG_KNOB_INTERP, "Inertia: value=$deviceKnobValue, velocity=$deviceKnobVelocity")
+                } else if (abs(deviceKnobVelocity) <= KNOB_MIN_VELOCITY) {
+                    // 速度过小，停止惯性
+                    deviceKnobVelocity = 0f
+                }
+
+                delay(KNOB_UPDATE_INTERVAL_MS)
             }
         }
     }
@@ -967,71 +978,8 @@ private fun RivePlayerUI(
         focusRequester.requestFocus()
     }
 
-    // ============ v11：固定步长 + 动态频率传输系统 ============
-    // 核心：速度 → 累积器 → 累积达到固定步长时才传参
-    // - 快速：50 单位/秒 → 每帧累积 0.8 → 每帧传 8 次 0.1 (相当于500/s)
-    // - 慢速：1 单位/秒 → 每帧累积 0.016 → 每 6 帧传 1 次 0.1 (相当于10/s)
-    // - Rive 永远收到 0.1 的固定增量，但频率不同！
-    if (!ENABLE_DEVICE_KNOB_LOOP) {
-        LaunchedEffect(riveViewRef, runtimeSession) {
-            val view = riveViewRef ?: return@LaunchedEffect
-            while (isActive) {
-                val currentTime = System.currentTimeMillis()
-                val timeSinceInput = currentTime - lastInputTime
-
-                // ====== 步骤 1：无输入时应用动态摩擦力 ======
-                if (timeSinceInput > KNOB_INPUT_TIMEOUT_MS) {
-                    // 动态摩擦：慢速停得快，快速保持惯性
-                    val dynamicFriction = if (kotlin.math.abs(rotationSpeed) < 1f) {
-                        0.5f  // 慢速时高摩擦
-                    } else {
-                        KNOB_FRICTION  // 快速时标准摩擦
-                    }
-                    rotationSpeed *= dynamicFriction
-                }
-
-                // ====== 步骤 2：检测静止 ======
-                if (kotlin.math.abs(rotationSpeed) < KNOB_MIN_ROTATION_SPEED) {
-                    rotationSpeed = 0f
-                    accumulator = 0f  // 清空累积器
-                    delay(KNOB_UPDATE_INTERVAL_MS)
-                    continue
-                }
-
-                // ====== 步骤 3：累积速度（单位/秒 × 秒 = 单位）======
-                val deltaTime = KNOB_UPDATE_INTERVAL_MS / 1000f  // 16ms = 0.016秒
-                accumulator += rotationSpeed * deltaTime
-
-                // ====== 步骤 4：当累积达到固定步长，传参 ======
-                var stepsThisFrame = 0
-                val step = if (accumulator >= 0) KNOB_FIXED_STEP else -KNOB_FIXED_STEP
-
-                while (kotlin.math.abs(accumulator) >= KNOB_FIXED_STEP) {
-                    deviceKnobValue = (deviceKnobValue + step).coerceAtLeast(0f)
-                    accumulator -= step
-
-                    // 触觉反馈：只在用户主动旋转期间震动（300ms内有输入）
-                    val currentFloor = floor(deviceKnobValue).toInt()
-                    val timeSinceLastInput = System.currentTimeMillis() - lastInputTime
-                    val isUserRotating = timeSinceLastInput <= 300L
-
-                    if (currentFloor != lastVibratedFloor && isUserRotating) {
-                        onKnobIntegerCross()
-                        lastVibratedFloor = currentFloor
-                    } else if (!isUserRotating && currentFloor != lastVibratedFloor) {
-                        // 惯性阶段：更新追踪但不震动
-                        lastVibratedFloor = currentFloor
-                    }
-
-                    // 写入 Rive
-                    runtimeSession.updateDeviceKnob(view, deviceKnobValue)
-                    stepsThisFrame++
-                }
-
-                delay(KNOB_UPDATE_INTERVAL_MS)
-            }
-        }
-    } else {
+    // 循环驱动模式（测试用）
+    if (ENABLE_DEVICE_KNOB_LOOP) {
         // 循环驱动 deviceKnob：周期内从 0 到 13 循环
         LaunchedEffect(riveViewRef, runtimeSession) {
             val view = riveViewRef ?: return@LaunchedEffect
@@ -1111,42 +1059,6 @@ private fun RivePlayerUI(
                 },
                 modifier = Modifier.fillMaxSize()
             )
-
-            // 调试信息显示
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    modifier = Modifier
-                        .background(Color.Black.copy(alpha = 0.7f))
-                        .padding(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "deviceKnob: ${String.format("%.3f", deviceKnobValue)}",
-                        color = Color.White,
-                        fontSize = 12.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "speed: ${String.format("%.6f", rotationSpeed)} u/s",
-                        color = Color(0xFF4CAF50),
-                        fontSize = 12.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "step: ${String.format("%.3f", KNOB_FIXED_STEP)}",
-                        color = Color(0xFF2196F3),
-                        fontSize = 12.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                    )
-                }
-            }
         }
     }
 
