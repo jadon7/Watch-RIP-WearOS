@@ -101,13 +101,19 @@ private const val TAG_KNOB_INTERP = "KnobInterpolation"
 // 每度旋转映射到的 deviceKnob 增量（调节敏感度时调整此值）
 private const val KNOB_DELTA_PER_DEGREE = 0.1f
 
-// ============ v14：简化直接控制方案 ============
+// ============ v15：基于速度的真实惯性方案 ============
 // 直接缩放系数 - 控制旋转一格对应的值变化
 private const val KNOB_DIRECT_SCALING = 0.3f
-// 惯性速度衰减系数 - 每帧乘以此值（0.95 = 温和衰减）
+// 速度累积因子 - 连续快速输入时速度累积的权重
+private const val KNOB_VELOCITY_ACCUMULATION = 0.7f
+// 惯性速度衰减系数 - 每帧乘以此值
 private const val KNOB_VELOCITY_DECAY = 0.92f
 // 最小速度阈值 - 低于此值视为静止
 private const val KNOB_MIN_VELOCITY = 0.01f
+// 最小惯性速度阈值 - 速度低于此值不启动惯性
+private const val KNOB_MIN_FLING_VELOCITY = 0.15f
+// 最大速度限制 - 防止速度无限累积
+private const val KNOB_MAX_VELOCITY = 5.0f
 // 更新间隔（60fps）
 private const val KNOB_UPDATE_INTERVAL_MS = 16L
 // deviceKnob 的最小/最大值
@@ -115,6 +121,10 @@ private const val KNOB_MIN_VALUE = 0f
 private const val KNOB_MAX_VALUE = 1000f
 // 用户输入超时 - 超过此时间无输入则认为停止
 private const val KNOB_INPUT_TIMEOUT_MS = 100L
+// 连续输入判定时间 - 小于此时间间隔视为连续快速输入
+private const val KNOB_CONTINUOUS_INPUT_MS = 50L
+// 双向同步延迟 - 用户停止操作后多久开始从Rive同步
+private const val KNOB_SYNC_FROM_RIVE_DELAY_MS = 150L
 
 // ============ 旧参数（保留兼容） ============
 private const val DEVICE_KNOB_SMOOTHING_FACTOR = 0.18f
@@ -830,8 +840,8 @@ private fun RivePlayerUI(
             val currentTime = System.currentTimeMillis()
             val timeSinceLastInput = currentTime - lastInputTime
 
-            // 如果超过500ms没有旋钮输入，从Rive同步值
-            if (timeSinceLastInput > 500L || lastInputTime == 0L) {
+            // 如果超过150ms没有旋钮输入，从Rive同步值（支持用户手指滑动Rive内容）
+            if (timeSinceLastInput > KNOB_SYNC_FROM_RIVE_DELAY_MS || lastInputTime == 0L) {
                 val riveKnobValue = runtimeSession.readDeviceKnob(view)
                 val roundedValue = riveKnobValue.round(2)
 
@@ -842,6 +852,7 @@ private fun RivePlayerUI(
                     lastVibratedFloor = floor(deviceKnobValue).toInt()
                     // 重置速度，停止惯性
                     deviceKnobVelocity = 0f
+                    Log.d(TAG_KNOB_INTERP, "Synced from Rive: $roundedValue")
                 }
             }
         }
@@ -881,7 +892,7 @@ private fun RivePlayerUI(
         }
     }
     
-    // ============ v14：输入层 - 监听旋钮事件 ============
+    // ============ v15：输入层 - 监听旋钮事件（基于速度的惯性） ============
     if (!ENABLE_DEVICE_KNOB_LOOP) {
         LaunchedEffect(rotaryKnobDeltaFlow) {
             rotaryKnobDeltaFlow.collect { delta ->
@@ -891,16 +902,34 @@ private fun RivePlayerUI(
                 }
 
                 val currentTime = System.currentTimeMillis()
+                val timeSinceLastInput = if (lastInputTime > 0) currentTime - lastInputTime else Long.MAX_VALUE
 
-                // 【用户输入阶段】
-                // 1. 直接更新 deviceKnob 值
+                // 【用户输入阶段 - 真正的双向绑定】
+                // 1. 从 Rive 读取当前实时值（确保基于最新状态）
+                val currentRiveValue = riveViewRef?.let { view ->
+                    runtimeSession.readDeviceKnob(view)
+                } ?: deviceKnobValue
+
+                // 2. 计算新值：在 Rive 当前值的基础上累加 delta
                 val scaledDelta = delta * KNOB_DIRECT_SCALING
-                deviceKnobValue = (deviceKnobValue + scaledDelta).coerceIn(KNOB_MIN_VALUE, KNOB_MAX_VALUE)
+                val newValue = (currentRiveValue + scaledDelta).coerceIn(KNOB_MIN_VALUE, KNOB_MAX_VALUE)
 
-                // 2. 更新速度（用于惯性）
-                deviceKnobVelocity = scaledDelta
+                // 3. 同步到本地状态
+                deviceKnobValue = newValue
 
-                // 3. 立即同步到 Rive
+                // 4. 智能速度更新：基于输入连续性
+                if (timeSinceLastInput < KNOB_CONTINUOUS_INPUT_MS) {
+                    // 连续快速输入 → 累积速度（模拟真实惯性）
+                    deviceKnobVelocity = deviceKnobVelocity * KNOB_VELOCITY_ACCUMULATION + scaledDelta * (1f - KNOB_VELOCITY_ACCUMULATION)
+                } else {
+                    // 单次慢速输入 → 重置为当前速度
+                    deviceKnobVelocity = scaledDelta
+                }
+
+                // 5. 限制速度上限，防止无限累积
+                deviceKnobVelocity = deviceKnobVelocity.coerceIn(-KNOB_MAX_VELOCITY, KNOB_MAX_VELOCITY)
+
+                // 6. 立即写回 Rive（完成双向绑定）
                 riveViewRef?.let { view ->
                     runtimeSession.updateDeviceKnob(view, deviceKnobValue)
 
@@ -913,22 +942,20 @@ private fun RivePlayerUI(
                 }
 
                 lastInputTime = currentTime
-
-                Log.d(TAG_KNOB_INTERP, "Input: delta=$delta, value=$deviceKnobValue, velocity=$deviceKnobVelocity")
             }
         }
     }
 
-    // ============ v14：惯性层 - 速度衰减和更新 ============
+    // ============ v15：惯性层 - 基于真实速度的惯性 ============
     if (!ENABLE_DEVICE_KNOB_LOOP) {
         LaunchedEffect(riveViewRef, runtimeSession) {
             while (isActive) {
                 val currentTime = System.currentTimeMillis()
                 val timeSinceLastInput = currentTime - lastInputTime
 
-                // 如果用户停止输入超过阈值，开始应用惯性
-                if (timeSinceLastInput > KNOB_INPUT_TIMEOUT_MS && abs(deviceKnobVelocity) > KNOB_MIN_VELOCITY) {
-                    // 【惯性阶段】
+                // 如果用户停止输入超过阈值，且速度足够大，开始应用惯性
+                if (timeSinceLastInput > KNOB_INPUT_TIMEOUT_MS && abs(deviceKnobVelocity) > KNOB_MIN_FLING_VELOCITY) {
+                    // 【惯性阶段】只有快速旋转才会触发
                     // 1. 应用速度到值
                     deviceKnobValue = (deviceKnobValue + deviceKnobVelocity).coerceIn(KNOB_MIN_VALUE, KNOB_MAX_VALUE)
 
@@ -950,8 +977,6 @@ private fun RivePlayerUI(
                             lastVibratedFloor = currentFloor
                         }
                     }
-
-                    Log.d(TAG_KNOB_INTERP, "Inertia: value=$deviceKnobValue, velocity=$deviceKnobVelocity")
                 } else if (abs(deviceKnobVelocity) <= KNOB_MIN_VELOCITY) {
                     // 速度过小，停止惯性
                     deviceKnobVelocity = 0f
@@ -1447,19 +1472,46 @@ private class RiveRuntimeSession(
     }
 
     fun readDeviceKnob(riveAnimationView: RiveAnimationView): Float {
-        val viewModel = viewModelInstance
-        if (viewModel != null && config.mode != RiveBindingMode.STATE_MACHINE_ONLY) {
-            try {
-                val property = viewModel.getNumberProperty("deviceKnob")
-                if (property != null) {
-                    val value = property.value
-                    lastKnownDeviceKnob = value
-                    markPropertyAvailable("deviceKnob")
-                    return value
+        if (config.mode != RiveBindingMode.STATE_MACHINE_ONLY) {
+            // 优先从 ViewModel 树中读取（支持嵌套 ViewModel）
+            val tree = viewModelTree
+            if (tree != null) {
+                // 遍历所有 ViewModel 节点，找到第一个有 deviceKnob 属性的
+                var foundValue: Float? = null
+                tree.forEachNode { node ->
+                    if (foundValue == null) {
+                        try {
+                            val property = node.instance.getNumberProperty("deviceKnob")
+                            if (property != null) {
+                                foundValue = property.value
+                                markPropertyAvailable("deviceKnob")
+                            }
+                        } catch (e: Exception) {
+                            // 继续尝试其他节点
+                        }
+                    }
                 }
-                markPropertyMissing("deviceKnob")
-            } catch (e: Exception) {
-                markPropertyMissing("deviceKnob", e)
+                if (foundValue != null) {
+                    lastKnownDeviceKnob = foundValue!!
+                    return foundValue!!
+                }
+            } else {
+                // 没有树结构，尝试顶层 ViewModel
+                val viewModel = viewModelInstance
+                if (viewModel != null) {
+                    try {
+                        val property = viewModel.getNumberProperty("deviceKnob")
+                        if (property != null) {
+                            val value = property.value
+                            lastKnownDeviceKnob = value
+                            markPropertyAvailable("deviceKnob")
+                            return value
+                        }
+                        markPropertyMissing("deviceKnob")
+                    } catch (e: Exception) {
+                        markPropertyMissing("deviceKnob", e)
+                    }
+                }
             }
         }
         return lastKnownDeviceKnob
