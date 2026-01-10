@@ -102,20 +102,22 @@ private const val TAG_KNOB_INTERP = "KnobInterpolation"
 private const val KNOB_DELTA_PER_DEGREE = 0.1f
 
 // ============ v15：基于速度的真实惯性方案 ============
-// 直接缩放系数 - 控制旋转一格对应的值变化
-private const val KNOB_DIRECT_SCALING = 0.3f
+// 直接缩放系数 - 控制旋转一格对应的值变化（进一步降低解决跳变）
+private const val KNOB_DIRECT_SCALING = 0.04f  // 从 0.1f 降低到 0.04f（日志显示delta最大12.146，需要更小的系数）
+// 单次delta裁剪上限 - 防止极端跳变（硬件层面偶尔会产生超大delta）
+private const val KNOB_DELTA_MAX_CLAMP = 6.0f  // 限制单次delta不超过6.0
 // 速度累积因子 - 连续快速输入时速度累积的权重
 private const val KNOB_VELOCITY_ACCUMULATION = 0.7f
-// 惯性速度衰减系数 - 每帧乘以此值
-private const val KNOB_VELOCITY_DECAY = 0.92f
+// 惯性速度衰减系数 - 每帧乘以此值（降低让惯性持续更久）
+private const val KNOB_VELOCITY_DECAY = 0.95f  // 从 0.92f 提高到 0.95f
 // 最小速度阈值 - 低于此值视为静止
-private const val KNOB_MIN_VELOCITY = 0.01f
+private const val KNOB_MIN_VELOCITY = 0.003f  // 从 0.005f 降低到 0.003f
 // 最小惯性速度阈值 - 速度低于此值不启动惯性
-private const val KNOB_MIN_FLING_VELOCITY = 0.15f
-// 最大速度限制 - 防止速度无限累积
-private const val KNOB_MAX_VELOCITY = 5.0f
-// 更新间隔（60fps）
-private const val KNOB_UPDATE_INTERVAL_MS = 16L
+private const val KNOB_MIN_FLING_VELOCITY = 0.06f  // 从 0.08f 降低到 0.06f
+// 最大速度限制 - 防止速度无限累积（配合更小的缩放系数）
+private const val KNOB_MAX_VELOCITY = 1.5f  // 从 3.0f 降低到 1.5f
+// 更新间隔（120fps 提高流畅度）
+private const val KNOB_UPDATE_INTERVAL_MS = 8L  // 120fps
 // deviceKnob 的最小/最大值
 private const val KNOB_MIN_VALUE = 0f
 private const val KNOB_MAX_VALUE = 1000f
@@ -125,6 +127,26 @@ private const val KNOB_INPUT_TIMEOUT_MS = 100L
 private const val KNOB_CONTINUOUS_INPUT_MS = 50L
 // 双向同步延迟 - 用户停止操作后多久开始从Rive同步
 private const val KNOB_SYNC_FROM_RIVE_DELAY_MS = 150L
+
+// ============ v16：吸附到整数功能 ============
+// 是否启用吸附到整数功能
+private const val KNOB_SNAP_TO_INTEGER = true
+// 触发吸附的速度阈值 - 速度降低到此值以下时开始吸附
+private const val KNOB_SNAP_VELOCITY_THRESHOLD = 0.04f  // 从 0.05f 降低到 0.04f（配合新的速度系统）
+// 吸附弹簧强度 - 值越大吸附越快（提高到0.4让吸附更明显）
+private const val KNOB_SNAP_SPRING_STRENGTH = 0.4f  // 从 0.25f 提高到 0.4f，吸附更快更明显
+// 吸附完成判定阈值 - 距离目标小于此值视为已到达
+private const val KNOB_SNAP_COMPLETE_THRESHOLD = 0.01f
+
+// ============ v16：调试日志开关 ============
+// 是否启用详细的 deviceKnob 变化日志（用于诊断卡顿和吸附问题）
+// 警告：开启会严重影响性能，仅在需要诊断时临时开启
+private const val KNOB_DEBUG_LOG_ENABLED = false  // 改为 false，避免性能问题
+
+// ============ 性能监控开关 ============
+// 是否启用Rive文件加载性能分析（用于诊断特定文件的加载慢问题）
+private const val RIVE_PERFORMANCE_LOG_ENABLED = true
+private const val TAG_PERFORMANCE = "RivePerformance"
 
 // ============ 旧参数（保留兼容） ============
 private const val DEVICE_KNOB_SMOOTHING_FACTOR = 0.18f
@@ -786,7 +808,7 @@ private fun RivePlayerUI(
     
     var reloadToken by remember { mutableStateOf(0) }
 
-    // ============ v14：简化直接控制状态 ============
+    // ============ v15/v16：直接控制 + 惯性 + 吸附状态 ============
     // deviceKnob 当前值（虚拟滚动值）
     var deviceKnobValue by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
     // 当前惯性速度（每帧的增量）
@@ -795,6 +817,10 @@ private fun RivePlayerUI(
     var lastInputTime by remember(file.absolutePath, reloadToken) { mutableStateOf(0L) }
     // 上次震动时的整数值，用于追踪floor变化
     var lastVibratedFloor by remember(file.absolutePath, reloadToken) { mutableStateOf(0) }
+    // v16：是否正在吸附到整数
+    var isSnapping by remember(file.absolutePath, reloadToken) { mutableStateOf(false) }
+    // v16：吸附目标值（最近的整数）
+    var snapTarget by remember(file.absolutePath, reloadToken) { mutableStateOf(0f) }
 
     // 使用 remember 保持引用，但不作为 Compose 状态，避免触发 recomposition
     var riveViewRef by remember { mutableStateOf<RiveAnimationView?>(null) }
@@ -910,14 +936,17 @@ private fun RivePlayerUI(
                     runtimeSession.readDeviceKnob(view)
                 } ?: deviceKnobValue
 
-                // 2. 计算新值：在 Rive 当前值的基础上累加 delta
-                val scaledDelta = delta * KNOB_DIRECT_SCALING
+                // 2. 裁剪delta防止硬件层面的极端跳变
+                val clampedDelta = delta.coerceIn(-KNOB_DELTA_MAX_CLAMP, KNOB_DELTA_MAX_CLAMP)
+
+                // 3. 计算新值：在 Rive 当前值的基础上累加 delta
+                val scaledDelta = clampedDelta * KNOB_DIRECT_SCALING
                 val newValue = (currentRiveValue + scaledDelta).coerceIn(KNOB_MIN_VALUE, KNOB_MAX_VALUE)
 
-                // 3. 同步到本地状态
+                // 4. 同步到本地状态
                 deviceKnobValue = newValue
 
-                // 4. 智能速度更新：基于输入连续性
+                // 5. 智能速度更新：基于输入连续性
                 if (timeSinceLastInput < KNOB_CONTINUOUS_INPUT_MS) {
                     // 连续快速输入 → 累积速度（模拟真实惯性）
                     deviceKnobVelocity = deviceKnobVelocity * KNOB_VELOCITY_ACCUMULATION + scaledDelta * (1f - KNOB_VELOCITY_ACCUMULATION)
@@ -926,12 +955,20 @@ private fun RivePlayerUI(
                     deviceKnobVelocity = scaledDelta
                 }
 
-                // 5. 限制速度上限，防止无限累积
+                // 6. 限制速度上限，防止无限累积
                 deviceKnobVelocity = deviceKnobVelocity.coerceIn(-KNOB_MAX_VELOCITY, KNOB_MAX_VELOCITY)
 
-                // 6. 立即写回 Rive（完成双向绑定）
+                // 7. 立即写回 Rive（完成双向绑定）
                 riveViewRef?.let { view ->
                     runtimeSession.updateDeviceKnob(view, deviceKnobValue)
+
+                    // v16：详细日志记录
+                    if (KNOB_DEBUG_LOG_ENABLED) {
+                        val clampedMarker = if (abs(delta) > KNOB_DELTA_MAX_CLAMP) "[CLAMPED]" else ""
+                        Log.d(TAG_KNOB_INTERP, "[INPUT] time=${currentTime % 10000} delta=${"%.3f".format(delta)}$clampedMarker " +
+                                "scaledDelta=${"%.3f".format(scaledDelta)} riveVal=${"%.3f".format(currentRiveValue)} " +
+                                "newVal=${"%.3f".format(deviceKnobValue)} velocity=${"%.3f".format(deviceKnobVelocity)}")
+                    }
 
                     // 触觉反馈
                     val currentFloor = floor(deviceKnobValue).toInt()
@@ -946,16 +983,62 @@ private fun RivePlayerUI(
         }
     }
 
-    // ============ v15：惯性层 - 基于真实速度的惯性 ============
+    // ============ v16：惯性层 - 基于真实速度的惯性 + 吸附到整数 ============
     if (!ENABLE_DEVICE_KNOB_LOOP) {
         LaunchedEffect(riveViewRef, runtimeSession) {
             while (isActive) {
                 val currentTime = System.currentTimeMillis()
                 val timeSinceLastInput = currentTime - lastInputTime
 
-                // 如果用户停止输入超过阈值，且速度足够大，开始应用惯性
-                if (timeSinceLastInput > KNOB_INPUT_TIMEOUT_MS && abs(deviceKnobVelocity) > KNOB_MIN_FLING_VELOCITY) {
-                    // 【惯性阶段】只有快速旋转才会触发
+                // 【用户输入中】：重置吸附状态和速度
+                if (timeSinceLastInput <= KNOB_INPUT_TIMEOUT_MS) {
+                    if (isSnapping) {
+                        isSnapping = false
+                        if (KNOB_DEBUG_LOG_ENABLED) {
+                            Log.d(TAG_KNOB_INTERP, "[SNAP_CANCELLED] 用户输入打断吸附")
+                        }
+                    }
+                }
+                // 【吸附阶段】：优先处理吸附（避免被静止阶段覆盖）
+                else if (isSnapping) {
+                    val distance = snapTarget - deviceKnobValue
+                    val absDistance = abs(distance)
+
+                    if (absDistance > KNOB_SNAP_COMPLETE_THRESHOLD) {
+                        val oldValue = deviceKnobValue
+                        // 使用弹簧插值逐渐接近目标
+                        val step = distance * KNOB_SNAP_SPRING_STRENGTH
+                        deviceKnobValue += step
+
+                        // 同步到 Rive
+                        riveViewRef?.let { view ->
+                            runtimeSession.updateDeviceKnob(view, deviceKnobValue)
+
+                            // v16：详细日志记录
+                            if (KNOB_DEBUG_LOG_ENABLED) {
+                                Log.d(TAG_KNOB_INTERP, "[SNAPPING] time=${currentTime % 10000} " +
+                                        "oldVal=${"%.3f".format(oldValue)} newVal=${"%.3f".format(deviceKnobValue)} " +
+                                        "target=$snapTarget distance=${"%.3f".format(distance)} step=${"%.3f".format(step)}")
+                            }
+                        }
+                    } else {
+                        // 距离足够小，直接设置为目标值并停止吸附
+                        deviceKnobValue = snapTarget
+                        isSnapping = false
+
+                        riveViewRef?.let { view ->
+                            runtimeSession.updateDeviceKnob(view, deviceKnobValue)
+
+                            if (KNOB_DEBUG_LOG_ENABLED) {
+                                Log.d(TAG_KNOB_INTERP, "[SNAP_COMPLETE] 吸附完成: 最终值=$deviceKnobValue")
+                            }
+                        }
+                    }
+                }
+                // 【惯性阶段】：用户停止输入，且速度足够大
+                else if (abs(deviceKnobVelocity) > KNOB_MIN_FLING_VELOCITY) {
+                    val oldValue = deviceKnobValue
+
                     // 1. 应用速度到值
                     deviceKnobValue = (deviceKnobValue + deviceKnobVelocity).coerceIn(KNOB_MIN_VALUE, KNOB_MAX_VALUE)
 
@@ -967,9 +1050,34 @@ private fun RivePlayerUI(
                         deviceKnobVelocity = 0f
                     }
 
-                    // 4. 同步到 Rive
+                    // 4. v16：检测是否需要进入吸附阶段
+                    if (KNOB_SNAP_TO_INTEGER && abs(deviceKnobVelocity) <= KNOB_SNAP_VELOCITY_THRESHOLD) {
+                        // 从 Rive 读取最新值（包括嵌套 ViewModel），确保吸附目标正确
+                        riveViewRef?.let { view ->
+                            val currentRiveValue = runtimeSession.readDeviceKnob(view)
+                            deviceKnobValue = currentRiveValue
+                        }
+
+                        // 速度降低到阈值以下，开始吸附到最近的整数
+                        isSnapping = true
+                        snapTarget = kotlin.math.round(deviceKnobValue)
+                        deviceKnobVelocity = 0f  // 清空惯性速度，由吸附逻辑接管
+
+                        if (KNOB_DEBUG_LOG_ENABLED) {
+                            Log.d(TAG_KNOB_INTERP, "[SNAP_START] 开始吸附（包括嵌套VM）: 当前=${"%.3f".format(deviceKnobValue)}, 目标=$snapTarget")
+                        }
+                    }
+
+                    // 5. 同步到 Rive
                     riveViewRef?.let { view ->
                         runtimeSession.updateDeviceKnob(view, deviceKnobValue)
+
+                        // v16：详细日志记录
+                        if (KNOB_DEBUG_LOG_ENABLED) {
+                            Log.d(TAG_KNOB_INTERP, "[INERTIA] time=${currentTime % 10000} " +
+                                    "oldVal=${"%.3f".format(oldValue)} newVal=${"%.3f".format(deviceKnobValue)} " +
+                                    "velocity=${"%.3f".format(deviceKnobVelocity)} timeSince=${timeSinceLastInput}ms")
+                        }
 
                         // 惯性阶段不震动，只更新追踪
                         val currentFloor = floor(deviceKnobValue).toInt()
@@ -977,9 +1085,13 @@ private fun RivePlayerUI(
                             lastVibratedFloor = currentFloor
                         }
                     }
-                } else if (abs(deviceKnobVelocity) <= KNOB_MIN_VELOCITY) {
-                    // 速度过小，停止惯性
+                }
+                // 【静止阶段】：速度过小，停止惯性
+                else if (abs(deviceKnobVelocity) <= KNOB_MIN_VELOCITY) {
                     deviceKnobVelocity = 0f
+                    if (KNOB_DEBUG_LOG_ENABLED && deviceKnobVelocity != 0f) {
+                        Log.d(TAG_KNOB_INTERP, "[IDLE] 速度过小，停止惯性")
+                    }
                 }
 
                 delay(KNOB_UPDATE_INTERVAL_MS)
@@ -1050,23 +1162,203 @@ private fun RivePlayerUI(
             AndroidView(
                 factory = { context ->
                     try {
+                        val startTime = System.currentTimeMillis()
+                        if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                            Log.d(TAG_PERFORMANCE, "========== 开始加载 Rive 文件 ==========")
+                            Log.d(TAG_PERFORMANCE, "文件路径: ${file.absolutePath}")
+                            Log.d(TAG_PERFORMANCE, "文件大小: ${file.length() / 1024}KB")
+                        }
+
                         RiveAnimationView(context).apply {
+                            var t0: Long
+                            var t1: Long
+
+                            // 步骤1: 创建 RiveAnimationView
+                            t0 = System.currentTimeMillis()
                             autoplay = true
                             riveViewRef = this
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                Log.d(TAG_PERFORMANCE, "[1] 创建 RiveAnimationView: ${System.currentTimeMillis() - t0}ms")
+                            }
+
+                            // 步骤2: 附加视图到 session
+                            t0 = System.currentTimeMillis()
                             runtimeSession.attachView(this)
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                Log.d(TAG_PERFORMANCE, "[2] attachView: ${System.currentTimeMillis() - t0}ms")
+                            }
+
+                            // 步骤3: 创建 RiveCoreFile（解析文件）
+                            t0 = System.currentTimeMillis()
                             val riveFile = RiveCoreFile(riveData)
+                            t1 = System.currentTimeMillis() - t0
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                Log.d(TAG_PERFORMANCE, "[3] 创建 RiveCoreFile (解析文件): ${t1}ms")
+                                if (t1 > 500) {
+                                    Log.w(TAG_PERFORMANCE, "⚠️ 警告：文件解析耗时超过500ms，可能文件过于复杂")
+                                }
+                            }
+
+                            // 步骤4: 设置 Rive 文件到视图
+                            t0 = System.currentTimeMillis()
                             setRiveFile(riveFile)
+                            t1 = System.currentTimeMillis() - t0
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                Log.d(TAG_PERFORMANCE, "[4] setRiveFile: ${t1}ms")
+                                if (t1 > 500) {
+                                    Log.w(TAG_PERFORMANCE, "⚠️ 警告：setRiveFile耗时超过500ms")
+                                }
+                            }
+
+                            // 步骤5: 添加事件监听器
+                            t0 = System.currentTimeMillis()
                             addEventListener(eventListener)
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                Log.d(TAG_PERFORMANCE, "[5] addEventListener: ${System.currentTimeMillis() - t0}ms")
+                            }
+
+                            // 步骤6: 分析文件结构
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                controller?.let { ctrl ->
+                                    Log.d(TAG_PERFORMANCE, "--- 文件结构分析 ---")
+                                    Log.d(TAG_PERFORMANCE, "State Machines 数量: ${ctrl.stateMachines.size}")
+                                    ctrl.stateMachines.forEachIndexed { index, sm ->
+                                        Log.d(TAG_PERFORMANCE, "  StateMachine[$index]: ${sm.name} (${sm.inputCount} inputs)")
+                                    }
+
+                                    Log.d(TAG_PERFORMANCE, "Animations 数量: ${ctrl.animations.size}")
+                                    ctrl.animations.forEachIndexed { index, anim ->
+                                        Log.d(TAG_PERFORMANCE, "  Animation[$index]: ${anim.name}")
+                                    }
+                                }
+                            }
+
                             runtimeSession.log("View created; autoplay=$autoplay mode=${bindingConfig.mode}")
+
+                            // 步骤7: 启动状态机
+                            t0 = System.currentTimeMillis()
                             controller?.stateMachines?.forEach { sm ->
                                 runCatching { play(sm.name) }.onFailure {
                                     Log.w(TAG_BINDING, "Failed to start state machine ${sm.name}", it)
                                 }
                             }
+                            t1 = System.currentTimeMillis() - t0
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                Log.d(TAG_PERFORMANCE, "[7] 启动所有状态机: ${t1}ms")
+                                if (t1 > 200) {
+                                    Log.w(TAG_PERFORMANCE, "⚠️ 警告：启动状态机耗时超过200ms，可能状态机过于复杂")
+                                }
+                            }
+
+                            // 步骤8: 绑定 ViewModel
+                            t0 = System.currentTimeMillis()
                             runtimeSession.bindViewModelIfNeeded(this)
+                            t1 = System.currentTimeMillis() - t0
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                Log.d(TAG_PERFORMANCE, "[8] bindViewModelIfNeeded: ${t1}ms")
+                                if (t1 > 200) {
+                                    Log.w(TAG_PERFORMANCE, "⚠️ 警告：ViewModel绑定耗时超过200ms")
+                                }
+                            }
+
+                            // 步骤9: 回调完成
+                            t0 = System.currentTimeMillis()
                             onRiveViewCreated(this)
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                Log.d(TAG_PERFORMANCE, "[9] onRiveViewCreated: ${System.currentTimeMillis() - t0}ms")
+                            }
+
+                            // 总结
+                            val totalTime = System.currentTimeMillis() - startTime
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                Log.d(TAG_PERFORMANCE, "========== 加载完成 ==========")
+                                Log.d(TAG_PERFORMANCE, "总耗时: ${totalTime}ms")
+                                if (totalTime > 1000) {
+                                    Log.e(TAG_PERFORMANCE, "❌ 加载时间超过1秒！")
+                                } else if (totalTime > 500) {
+                                    Log.w(TAG_PERFORMANCE, "⚠️ 加载时间超过500ms")
+                                } else {
+                                    Log.i(TAG_PERFORMANCE, "✅ 加载速度正常")
+                                }
+                            }
+
+                            // 步骤10: 监控首次渲染时间（使用多次post延迟来捕捉真实的首帧渲染）
+                            if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                                val factoryEndTime = System.currentTimeMillis()
+                                var firstLayoutLogged = false
+                                var firstDrawLogged = false
+
+                                viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+                                    override fun onGlobalLayout() {
+                                        if (!firstLayoutLogged) {
+                                            firstLayoutLogged = true
+                                            val layoutTime = System.currentTimeMillis() - factoryEndTime
+                                            Log.d(TAG_PERFORMANCE, "[10] 首次布局完成: ${layoutTime}ms (从加载完成算起)")
+                                        }
+                                    }
+                                })
+
+                                viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+                                    override fun onPreDraw(): Boolean {
+                                        if (!firstDrawLogged) {
+                                            firstDrawLogged = true
+                                            val drawTime = System.currentTimeMillis() - factoryEndTime
+                                            Log.d(TAG_PERFORMANCE, "[11] 首次绘制开始: ${drawTime}ms (从加载完成算起)")
+
+                                            // 添加多个延迟检测点来捕捉真实的渲染完成时间
+                                            post {
+                                                val t1 = System.currentTimeMillis() - startTime
+                                                Log.d(TAG_PERFORMANCE, "[12.1] post(0): ${t1}ms")
+                                            }
+
+                                            postDelayed({
+                                                val t2 = System.currentTimeMillis() - startTime
+                                                Log.d(TAG_PERFORMANCE, "[12.2] postDelayed(100ms): ${t2}ms")
+                                            }, 100)
+
+                                            postDelayed({
+                                                val t3 = System.currentTimeMillis() - startTime
+                                                Log.d(TAG_PERFORMANCE, "[12.3] postDelayed(500ms): ${t3}ms")
+                                            }, 500)
+
+                                            postDelayed({
+                                                val t4 = System.currentTimeMillis() - startTime
+                                                Log.d(TAG_PERFORMANCE, "[12.4] postDelayed(1000ms): ${t4}ms")
+                                            }, 1000)
+
+                                            postDelayed({
+                                                val t5 = System.currentTimeMillis() - startTime
+                                                Log.d(TAG_PERFORMANCE, "[12.5] postDelayed(3000ms): ${t5}ms")
+                                            }, 3000)
+
+                                            postDelayed({
+                                                val t6 = System.currentTimeMillis() - startTime
+                                                Log.e(TAG_PERFORMANCE, "🎬🎬🎬 [真实首帧时间] postDelayed(5000ms): ${t6}ms")
+                                                if (t6 > 10000) {
+                                                    Log.e(TAG_PERFORMANCE, "❌❌❌❌❌ 超过10秒才渲染！")
+                                                }
+                                            }, 5000)
+
+                                            postDelayed({
+                                                val t7 = System.currentTimeMillis() - startTime
+                                                Log.e(TAG_PERFORMANCE, "🎬🎬🎬 [真实首帧时间] postDelayed(10000ms): ${t7}ms")
+                                                Log.e(TAG_PERFORMANCE, "========== 完整渲染流程结束 ==========")
+                                                if (t7 > 12000) {
+                                                    Log.e(TAG_PERFORMANCE, "❌❌❌❌❌ 总时间超过12秒！渲染阶段存在严重性能问题！")
+                                                } else if (t7 > 5000) {
+                                                    Log.e(TAG_PERFORMANCE, "❌❌ 总时间超过5秒")
+                                                }
+                                            }, 10000)
+                                        }
+                                        return true
+                                    }
+                                })
+                            }
                         }
                     } catch (e: Exception) {
+                        if (RIVE_PERFORMANCE_LOG_ENABLED) {
+                            Log.e(TAG_PERFORMANCE, "❌ 加载失败: ${e.message}", e)
+                        }
                         Log.e("RivePlayerUI", "Error creating RiveAnimationView", e)
                         throw e
                     }
